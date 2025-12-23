@@ -1,3 +1,18 @@
+Metadata-Version: 2.4
+Name: apscale-blast2
+Version: 1.0.0
+Summary: APSCALE-like BLAST with per-FASTA DB selection, APSCALE flags, taxonomy cleaning, tqdm progress, Python 3.13 compatible.
+Author: You
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: pandas>=2.0
+Requires-Dist: openpyxl>=3.1
+Requires-Dist: pyarrow>=12
+Requires-Dist: tqdm>=4.66
+Dynamic: license-file
+
 # apscale_blast2 (v1.0.0)
 
 `apscale_blast2` is a local BLAST-based taxonomic assignment tool inspired by **apscale_blast**.

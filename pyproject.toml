@@ -1,0 +1,23 @@
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apscale-blast2"
+version = "1.0.0"
+description = "APSCALE-like BLAST with per-FASTA DB selection, APSCALE flags, taxonomy cleaning, tqdm progress, Python 3.13 compatible."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "You"}]
+dependencies = ["pandas>=2.0","openpyxl>=3.1","pyarrow>=12","tqdm>=4.66"]
+[project.scripts]
+apscale_blast2 = "apscale_blast2.cli:main"
+
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

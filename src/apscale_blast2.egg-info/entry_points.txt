@@ -1,0 +1,2 @@
+[console_scripts]
+apscale_blast2 = apscale_blast2.cli:main
