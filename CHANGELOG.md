@@ -11,3 +11,9 @@
   - Soft in-Python preference for >=90% (fallback to all hits if none pass)
 - BLAST+ >= 2.17.0 requirement enforced at startup.
 - In-memory taxonomy cache reused across multiple FASTA runs within one execution.
+
+## 1.0.1 — Help output fix and improved readme
+
+- Fixed `-h/--help` crash caused by unescaped percent signs in argparse help strings.
+- Improved CLI help formatting with grouped options, examples, and a standard `-V/--version` flag.
+- Improved Readme

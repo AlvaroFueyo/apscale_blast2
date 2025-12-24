@@ -7,8 +7,15 @@ This module implements:
 """
 
 from __future__ import annotations
-import argparse, os, shutil, logging
-from typing import List, Tuple, Dict
+
+import argparse
+import logging
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
+from typing import Dict, List, Tuple
 
 from .blast_runner import run, RunOptions
 from .dbs import DatabaseSpec, validate_database
@@ -21,6 +28,7 @@ from .db_build_silva import build_silva_db
 from .db_build_pr2 import build_pr2_db
 from .db_build_diatbarcode import build_diatbarcode_db
 from .blast_tools import require_blast_217
+from . import __version__
 
 FA_EXTS = (".fa", ".fasta", ".fna")
 
@@ -83,35 +91,155 @@ def validate_range(name: str, val: float, lo: float, hi: float, integer=False):
     return int(val) if integer else val
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="apscale_blast2",
-        description=(
-            "Select a folder of FASTA files, choose a database per FASTA, and run local BLAST (APSCALE-like). "
-            "Databases are stored by default in a per-user local store (APSCALE_BLAST2_DB_HOME). "
-            "Requires NCBI BLAST+ >= 2.17.0."
-        ))
-    p.add_argument("--fastas", help="Folder containing .fa/.fasta/.fna files (non-recursive). If omitted, you will be prompted.")
-    p.add_argument("--db-home", help="Folder used to store/discover local databases (overrides the default).")
-    p.add_argument("--dbs", help="Additional folder containing databases (optional). It will be added to the discovered list.")
-    p.add_argument("--db-for-all", help="Use this database folder/prefix for all FASTA files (non-interactive mode).")
-    p.add_argument("--db-map", help="CSV with columns 'fasta,db' (basenames and DB folders/prefixes). Non-interactive mode.")
-    p.add_argument("--threads", type=int, default=0, help="Threads (0=auto=max(1,cpu-2)). Range: 0..1024 (default: 0).")
-    p.add_argument("--workers", type=int, default=1, help="BLAST worker processes. Range: 1..128 (default: 1).")
-    p.add_argument("--subset-size", type=int, default=100, help="Sequences per subset chunk. Range: 1..10000 (default: 100).")
-    p.add_argument("--task", choices=["megablast","blastn"], default="megablast", help="def: megablast")
-    p.add_argument("--max-target-seqs", type=int, default=20, help="Max hits per query. Range: 1..1000 (default: 20).")
-    p.add_argument("--no-masking", action="store_true", help="Disable DUST/soft masking (default: enabled).")
-    p.add_argument("--min-qcov", type=float, default=50.0, help="Minimum coverage % (qcovs/qcovhsp). Range: 0..100 (default: 50.0).")
-    p.add_argument("--max-evalue", type=float, default=1e-3, help="Maximum E-value. Range: 1e-300..1 (default: 1e-3).")
-    p.add_argument("--min-pident", type=float, default=50.0, help="Minimum identity % (pident). Range: 0..100 (default: 50).")
-    p.add_argument("--inline-perc-identity", dest="inline_perc_identity", action="store_true", default=True,
-                   help="Pass -perc_identity to BLAST using --min-pident (default: enabled).")
-    p.add_argument("--no-inline-perc-identity", dest="inline_perc_identity", action="store_false",
-                   help="Disable -perc_identity filtering during BLAST execution.")
-    p.add_argument("--keep-tsv", action="store_true", help="Keep intermediate TSV files (default: cleaned up automatically).")
-    p.add_argument("--blastn-exe", default="blastn", help="blastn executable (default: blastn).")
-    p.add_argument("--makeblastdb-exe", default="makeblastdb", help="makeblastdb executable (default: makeblastdb).")
-    p.add_argument("--thresholds", default="97,95,90,87,85", help="Thresholds for species,genus,family,order,class (APSCALE defaults).")
-    p.add_argument("--log-level", choices=["DEBUG","INFO","WARNING","ERROR"], default="INFO", help="Logging level (default: INFO).")
+    class _Fmt(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
+        """Help formatter combining defaults + multi-line descriptions."""
+
+    description = (
+        "apscale_blast2: local BLAST-based taxonomic assignment with APSCALE-like trimming and ambiguity flags.\n\n"
+        "Interactive mode (wizard) is the default when you do not provide non-interactive database arguments.\n"
+        "Databases are stored and auto-discovered from a per-user local store by default.\n"
+        "NCBI BLAST+ >= 2.17.0 is required."
+    )
+    epilog = textwrap.dedent(
+        """\
+        Examples:
+          # Interactive wizard (prompts for FASTA folder and DB selection)
+          apscale_blast2
+
+          # Wizard, but pre-select the FASTA folder
+          apscale_blast2 --fastas path/to/fasta_dir
+
+          # Non-interactive: use one database for all FASTA files
+          apscale_blast2 --fastas path/to/fasta_dir --db-for-all path/to/db_folder
+
+          # Non-interactive: per-FASTA mapping from a CSV (columns: fasta,db)
+          apscale_blast2 --fastas path/to/fasta_dir --db-map mapping.csv
+        """
+    )
+
+    p = argparse.ArgumentParser(
+        prog="apscale_blast2",
+        description=description,
+        epilog=epilog,
+        formatter_class=_Fmt,
+    )
+
+    p.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+        help="Show program version and exit.",
+    )
+
+    # Note: argparse uses old-style string formatting for help messages.
+    # Avoid raw percent signs in help strings (use "percent" or escape as "%%").
+
+    # Input selection
+    g_in = p.add_argument_group("Inputs")
+    g_in.add_argument(
+        "--fastas",
+        help="Directory containing .fa/.fasta/.fna files (non-recursive). If omitted, you will be prompted in wizard mode.",
+    )
+
+    # Database selection/discovery
+    g_db = p.add_argument_group("Databases")
+    g_db.add_argument("--db-home", help="Directory used to store and auto-discover local databases (overrides the default).")
+    g_db.add_argument("--dbs", help="Additional directory containing databases (optional). Added to the discovery list.")
+    g_db.add_argument("--db-for-all", help="Use this database folder/prefix for all FASTA files (non-interactive mode).")
+    g_db.add_argument(
+        "--db-map",
+        help="CSV mapping FASTA basenames to database folders/prefixes (columns: fasta,db). Non-interactive mode.",
+    )
+    g_db.add_argument(
+        "--print-db-home",
+        action="store_true",
+        help="Print the resolved local database directory and exit.",
+    )
+    g_db.add_argument(
+        "--open-db-home",
+        action="store_true",
+        help="Open the local database directory in your system file explorer and exit.",
+    )
+
+    # Execution/performance
+    g_exec = p.add_argument_group("Execution")
+    g_exec.add_argument(
+        "--threads",
+        type=int,
+        default=0,
+        help="BLAST threads (0=auto=max(1,cpu-2)).",
+    )
+    g_exec.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="BLAST worker processes (use 1 unless you know what you are doing).",
+    )
+    g_exec.add_argument("--subset-size", type=int, default=100, help="Sequences per subset chunk.")
+
+    # BLAST settings
+    g_blast = p.add_argument_group("BLAST")
+    g_blast.add_argument(
+        "--task",
+        choices=["megablast", "blastn"],
+        default="megablast",
+        help="BLAST task: megablast is faster for similar barcodes/amplicons; blastn is more sensitive.",
+    )
+    g_blast.add_argument("--max-target-seqs", type=int, default=20, help="Maximum hits reported per query.")
+    g_blast.add_argument("--no-masking", action="store_true", help="Disable DUST/soft masking (default: enabled).")
+    g_blast.add_argument("--blastn-exe", default="blastn", help="Path/name of the blastn executable.")
+    g_blast.add_argument("--makeblastdb-exe", default="makeblastdb", help="Path/name of the makeblastdb executable.")
+
+    # Filtering / trimming
+    g_flt = p.add_argument_group("Filtering")
+    g_flt.add_argument(
+        "--min-qcov",
+        type=float,
+        default=50.0,
+        help="Hard minimum query coverage (percent) applied at BLAST level (qcovs/qcovhsp).",
+    )
+    g_flt.add_argument(
+        "--max-evalue",
+        type=float,
+        default=1e-3,
+        help="Maximum E-value (passed to BLAST and used in post-processing).",
+    )
+    g_flt.add_argument(
+        "--min-pident",
+        type=float,
+        default=50.0,
+        help="Minimum percent identity (pident).",
+    )
+    g_flt.add_argument(
+        "--inline-perc-identity",
+        dest="inline_perc_identity",
+        action="store_true",
+        default=True,
+        help="Pass -perc_identity to BLAST using --min-pident.",
+    )
+    g_flt.add_argument(
+        "--no-inline-perc-identity",
+        dest="inline_perc_identity",
+        action="store_false",
+        help="Do not pass -perc_identity to BLAST (apply identity filter only in post-processing).",
+    )
+    g_flt.add_argument(
+        "--thresholds",
+        default="97,95,90,87,85",
+        help="Comma-separated thresholds for species, genus, family, order, class (APSCALE defaults).",
+    )
+
+    # Output/debug
+    g_out = p.add_argument_group("Output")
+    g_out.add_argument("--keep-tsv", action="store_true", help="Keep intermediate TSV files (default: cleaned up).")
+    g_out.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Logging verbosity.",
+    )
+
     return p
 
 def prompt_dir(prompt_text: str) -> str:
@@ -205,6 +333,25 @@ def main(argv=None):
     logging.basicConfig(level=getattr(logging, a.log_level), format="%(levelname)s: %(message)s")
     logger = logging.getLogger("apscale_blast2")
 
+    # Resolve DB home early so utility flags can work without requiring BLAST.
+    db_home = get_db_home(a.db_home, ensure=True)
+
+    if getattr(a, "print_db_home", False):
+        print(db_home)
+        return 0
+
+    if getattr(a, "open_db_home", False):
+        try:
+            if os.name == "nt":
+                os.startfile(db_home)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.run(["open", db_home], check=False)
+            else:
+                subprocess.run(["xdg-open", db_home], check=False)
+        except Exception as e:
+            raise SystemExit(f"Could not open database directory: {e}")
+        return 0
+
     a.threads         = validate_range("--threads", float(a.threads), 0, 1024, integer=True)
     a.workers         = validate_range("--workers", float(a.workers), 1, 128, integer=True)
     a.subset_size     = validate_range("--subset-size", float(a.subset_size), 1, 10000, integer=True)
@@ -219,7 +366,6 @@ def main(argv=None):
     fasta_dir = a.fastas or prompt_dir("Folder with FASTA files: ")
 
     # Local DB store (no prompt): default per-user folder, overridable.
-    db_home = get_db_home(a.db_home, ensure=True)
     search_dirs = [db_home]
     if a.dbs:
         if not os.path.isdir(a.dbs):
@@ -250,14 +396,14 @@ def main(argv=None):
         mp = read_db_map(a.db_map)
         missing = [os.path.basename(fa) for fa in fastas if os.path.basename(fa) not in mp]
         if missing:
-            raise SystemExit("El CSV de --db-map no contiene estos FASTA: " + ", ".join(missing))
+            raise SystemExit("The --db-map CSV does not contain these FASTA files: " + ", ".join(missing))
         selections = [(fa, mp[os.path.basename(fa)]) for fa in fastas]
         print("Non-interactive mode: using the --db-map mapping.", flush=True)
     else:
         if not dbs:
             print(f"\nDetected {len(fastas)} FASTA(s). No databases installed yet in: {db_home}", flush=True)
         else:
-            print(f"\nDetected {len(fastas)} FASTA(s) y {len(dbs)} base(s) candidata(s).", flush=True)
+            print(f"\nDetected {len(fastas)} FASTA(s) and {len(dbs)} candidate database(s).", flush=True)
 
         # Search-mode selection (interactive mode only)
         a.task = prompt_task_choice(default=a.task)
@@ -332,7 +478,7 @@ def main(argv=None):
     print("\nDatabase selection summary:", flush=True)
     for fa, dbp in selections:
         if dbp is None:
-            print(f"  - {os.path.basename(fa)}  →  (saltado)", flush=True)
+            print(f"  - {os.path.basename(fa)}  →  (skipped)", flush=True)
         else:
             print(f"  - {os.path.basename(fa)}  →  {dbp}", flush=True)
 
@@ -355,7 +501,7 @@ def main(argv=None):
             src = info.get("input", "")
             tax = info.get("taxonomy", "")
 
-            print(f"  - Construyendo {recipe.upper()}: {name}", flush=True)
+            print(f"  - Building {recipe.upper()}: {name}", flush=True)
             if recipe == "trnl":
                 built = build_trnl_db(input_fasta=src, taxonomy_path=tax, db_home=db_home, name=name, makeblastdb_exe=a.makeblastdb_exe)
             elif recipe == "unite":
@@ -391,13 +537,13 @@ def main(argv=None):
 
     for fa, dbp in selections:
         if dbp is None:
-            print(f"Omitido: {os.path.basename(fa)}", flush=True)
+            print(f"Skipped: {os.path.basename(fa)}", flush=True)
             continue
         out_dir = os.path.join(tmp_root, os.path.splitext(os.path.basename(fa))[0])
         os.makedirs(out_dir, exist_ok=True)
         dbspec = DatabaseSpec(path=dbp)
         res = run(fa, out_dir, dbspec, opts)
-        print(f"Listo: {res['filtered_xlsx']}", flush=True)
+        print(f"Done: {res['filtered_xlsx']}", flush=True)
 
     try:
         if os.path.isdir(tmp_root) and not os.listdir(tmp_root):
