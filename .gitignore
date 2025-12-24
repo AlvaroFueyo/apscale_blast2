@@ -1,0 +1,83 @@
+# ----------------------------
+# Python / packaging
+# ----------------------------
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+.wheels/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments (if you ever use them)
+.venv/
+venv/
+ENV/
+env/
+
+# ----------------------------
+# OS / IDE
+# ----------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ----------------------------
+# Logs / temp
+# ----------------------------
+*.log
+*.tmp
+*.temp
+
+# ----------------------------
+# Output folders produced by apscale_blast2 runs
+# (common defaults and your example workflow)
+# ----------------------------
+raw_blast/
+taxonomy/
+tmp/
+temp/
+out/
+output/
+outputs/
+results/
+
+# If you run the wizard inside examples/, ignore any outputs created there
+examples/raw_blast/
+examples/taxonomy/
+examples/tmp/
+examples/temp/
+examples/output/
+examples/outputs/
+examples/results/
+
+# ----------------------------
+# BLAST databases (optional)
+# If you ever keep local BLAST db files inside the repo, ignore them.
+# Better stored in the user DB home anyway.
+# ----------------------------
+*.nin
+*.nhr
+*.nsq
+*.nal
+*.ndb
+*.not
+*.ntf
+*.nto
+*.njs
+*.nos
+*.bti
+*.btd
+*.pin
+*.phr
+*.psq
+*.pal

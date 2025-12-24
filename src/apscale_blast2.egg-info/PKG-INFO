@@ -13,7 +13,7 @@ Requires-Dist: pyarrow>=12
 Requires-Dist: tqdm>=4.66
 Dynamic: license-file
 
-# apscale_blast2 (v1.0.0)
+# apscale_blast2
 
 `apscale_blast2` is a local BLAST-based taxonomic assignment tool inspired by **apscale_blast**.
 It preserves the APSCALE-style assignment logic (mode-1 hit selection and F1–F4 flags) while adding
@@ -45,8 +45,6 @@ curated reference databases and obtain both **raw BLAST hits** and **taxonomy-aw
 - [**NCBI BLAST+ >= 2.17.0**](https://blast.ncbi.nlm.nih.gov/doc/blast-help/downloadblastdata.html) in the Path (hard requirement). The program checks this at startup.
 
 You can find the latest blast+ executables and further information on the installation [here](https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/LATEST/).
-
-IMPORTANT: Please cite the blast+ software.
 
 Camacho, C., Coulouris, G., Avagyan, V., Ma, N., Papadopoulos, J., Bealer, K., & Madden, T. L. (2009). BLAST+: Architecture and applications. BMC Bioinformatics, 10, 421. [https://doi.org/10.1186/1471-2105-10-421](https://doi.org/10.1186/1471-2105-10-421)
 

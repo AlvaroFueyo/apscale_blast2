@@ -98,31 +98,26 @@ Temporary subset FASTA files are created under a run directory and removed by de
 
 ## Ambiguity flags (F1–F4)
 
-apscale_blast2 follows the same *APSCALE/APSCALE-GUI* taxonomic assignment decision tree described by Macher et al. (2023), where ambiguous species-level BLAST results are handled using four flags (F1–F4). :contentReference[oaicite:0]{index=0}
+apscale_blast2 follows the same *APSCALE/APSCALE-GUI* taxonomic assignment decision tree described by Macher et al. (2023), where ambiguous species-level BLAST results are handled using four flags (F1–F4).
 
 ### When are flags applied?
-Flags are only relevant when **multiple species-level candidates remain** after the initial trimming / filtering steps (e.g., similarity-based ranking and threshold trimming). The goal is to either (i) keep a species call when it is clearly supported, or (ii) **downgrade** the assignment to genus or higher ranks when the ambiguity cannot be resolved. :contentReference[oaicite:1]{index=1}
+Flags are only relevant when **multiple species-level candidates remain** after the initial trimming / filtering steps (e.g., similarity-based ranking and threshold trimming). The goal is to either (i) keep a species call when it is clearly supported, or (ii) **downgrade** the assignment to genus or higher ranks when the ambiguity cannot be resolved.
 
 ### Flag definitions
 
 - **F1 — Dominant taxon**  
-  If, after trimming, a *dominant* species-level taxon remains, it is selected as the final assignment (“F1 – Dominant taxon”). :contentReference[oaicite:3]{index=3}
+  If, after trimming, a *dominant* species-level taxon remains, it is selected as the final assignment (“F1 – Dominant taxon”).
 
 - **F2 — Two species, one genus**  
-  If exactly **two species** of the **same genus** remain, the assignment is stored as the genus plus both possible species epithets separated by a slash (e.g., *Leuciscus idus/leuciscus*). :contentReference[oaicite:4]{index=4}
+  If exactly **two species** of the **same genus** remain, the assignment is stored as the genus plus both possible species epithets separated by a slash (e.g., *Leuciscus idus/leuciscus*).
 
 - **F3 — Multiple species of one genus**  
-  If **one genus** remains but **more than two species** are still possible, the assignment is saved at genus level (e.g., *Hucho sp.*), with the list of ambiguous species retained as metadata. :contentReference[oaicite:5]{index=5}
+  If **one genus** remains but **more than two species** are still possible, the assignment is saved at genus level (e.g., *Hucho sp.*), with the list of ambiguous species retained as metadata.
 
 - **F4 — Multiple genera (Trimming to MRCA)**  
-  If candidates belong to **more than one genus** and no dominant taxon is present, the assignment is trimmed to the **most recent common taxon** (MRCA; Most Recent Common Ancestor, the lowest shared rank across the remaining candidates). :contentReference[oaicite:6]{index=6}
+  If candidates belong to **more than one genus** and no dominant taxon is present, the assignment is trimmed to the **most recent common taxon** (MRCA; Most Recent Common Ancestor, the lowest shared rank across the remaining candidates).
 
 Macher T-H, Schütz R, Yildiz A, Beermann AJ, Leese F (2023) ﻿Evaluating five primer pairs for environmental DNA metabarcoding of Central European fish species based on mock communities. Metabarcoding and Metagenomics 7: e103856. [https://doi.org/10.3897/mbmg.7.103856](https://doi.org/10.3897/mbmg.7.103856)
-
-
-## License
-
-MIT (see `LICENSE`).
 
 ## Databases
 
@@ -166,3 +161,8 @@ Curd, E. E., Gold, Z., Kandlikar, G. S., Gomer, J., Ogden, M., O’Connell, T., 
 #### Precompiled databases
 
 Apscale-blast2 could intall pre-compiled databases. The [pre-compiled databases are available under the following server](https://seafile.rlp.net/d/474b9682a5cb4193a6ad/) and will be updated regularly.
+
+
+## License
+
+MIT (see `LICENSE`).
