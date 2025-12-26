@@ -60,6 +60,10 @@ examples/output/
 examples/outputs/
 examples/results/
 
+
+# Databases
+dbs/
+
 # ----------------------------
 # BLAST databases (optional)
 # If you ever keep local BLAST db files inside the repo, ignore them.

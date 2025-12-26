@@ -24,7 +24,12 @@ from .taxmap import load_taxmap_as_dict
 from .filtering import thresholds_to_dict, trim_by_similarity, choose_flag_rest
 from .taxonomy_clean import clean_species, clean_genus
 
-BLAST_OUTFMT = "6 qseqid sseqid sacc saccver pident evalue qcovs qcovhsp"
+# Raw BLAST columns (tabular outfmt 6). Keep this stable unless you bump a major version.
+# - sseqid / sacc for easy trace-back to local DB / GenBank
+# - mismatch / gapopen for extra QC without bloating exports too much
+BLAST_OUTFMT = (
+    "6 qseqid sseqid sacc saccver pident evalue qcovs qcovhsp mismatch gapopen"
+)
 
 # In-memory cache to avoid reloading taxonomy when multiple FASTA files
 # use the same database within a single execution.
@@ -58,10 +63,10 @@ class RunOptions:
     subset_size: int = 100
     # Default: megablast (fast; suitable for relatively similar amplicons/barcodes).
     task: str = "megablast"
-    max_target_seqs: int = 20
+    max_target_seqs: int = 30
     masking: bool = True
     min_qcov: float = 50.0
-    prefer_qcov: float = 90.0  # filtro blando por query coverage (se aplica si deja hits)
+    prefer_qcov: float = 90.0  # soft query coverage filter (applied only if it leaves at least one hit)
     max_evalue: float = 1e-3
     min_pident: float = 50.0
     blastn_exe: str = "blastn"
@@ -69,6 +74,11 @@ class RunOptions:
     thresholds: str = "97,95,90,87,85"
     log_level: str = "INFO"
     inline_perc_identity: bool = True
+
+    # Flagging / assignment scheme
+    # - apscale2: new MRCA-based trimming flags (default)
+    # - apscale: legacy APSCALE-BLAST behaviour (dominant-taxon flags, no qcov filters, blastn task)
+    flag_scheme: str = "apscale2"
 
     # Hit selection order *before* applying thresholds/flags.
     # 1 = Similarity -> evalue  ("mode 1" (classic): max similarity first; tie-breaker -> min E-value)
@@ -148,6 +158,37 @@ def _resolve_sequence_id(row, tax_dict):
             return k, tax_dict[k]
     return None, None
 
+
+def _extract_accession(subject_id: str) -> str:
+    """Best-effort extraction of an accession-like identifier.
+
+    Curated local databases frequently encode taxonomy in the FASTA header
+    after a delimiter (commonly "###"), e.g.:
+
+        AP011214.1.70.1027###root_1;Eukaryota_2759;...
+
+    In these cases BLAST may not populate the standard `sacc`/`saccver`
+    fields, so we derive a stable identifier from `sseqid`.
+
+    The function:
+      1) strips taxonomy suffixes after "###" (if present),
+      2) attempts to reduce coordinate-encoded ids to `ACCESSION.VERSION`.
+
+    If it cannot identify an `ACCESSION.VERSION` pattern, it returns the
+    stripped id as-is.
+    """
+
+    if subject_id is None:
+        return ""
+
+    core = str(subject_id).split("###", 1)[0].strip()
+    # Many MIDORI/GB-derived headers can look like `AP011214.1.70.1027`.
+    # Keep the leading ACCESSION.VERSION if present.
+    m = re.match(r"^([A-Za-z]{1,4}\d+\.\d+)", core)
+    if m:
+        return m.group(1)
+    return core
+
 def _prefilter_hits(raw: pd.DataFrame, min_qcov: float, max_evalue: float, min_pident: float) -> pd.DataFrame:
     df = raw.copy()
     for c in ["pident","evalue","qcovs","qcovhsp"]:
@@ -209,7 +250,18 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
 
     print("Starting post-processing...", flush=True)
     print("Merging TSV files...", flush=True)
-    cols = ["qseqid","sseqid","sacc","saccver","pident","evalue","qcovs","qcovhsp"]
+    cols = [
+        "qseqid",
+        "sseqid",
+        "sacc",
+        "saccver",
+        "pident",
+        "evalue",
+        "qcovs",
+        "qcovhsp",
+        "mismatch",
+        "gapopen",
+    ]
     dfs = [pd.read_csv(p, sep="\t", names=cols, dtype=str, na_filter=False) for p in tsvs]
     raw = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame(columns=cols)
 
@@ -225,9 +277,17 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
             species = clean_species(ranks[6])
         else:
             genus = ""; species = ""
+        subject_id = key or r["sseqid"]
+        # BLAST may not populate sacc/saccver for custom subject ids. Provide an
+        # explicit accession column derived from the subject id to improve
+        # traceability (e.g. easy follow-up in GenBank).
+        accession = r.get("saccver", "") or r.get("sacc", "")
+        accession = accession or _extract_accession(subject_id)
+
         rows.append({
             "unique ID": r["qseqid"],
             "Sequence ID": key or r["sseqid"],
+            "Accession": accession,
             "Kingdom": (ranks[0] if ranks else ""),
             "Phylum":  (ranks[1] if ranks else ""),
             "Class":   (ranks[2] if ranks else ""),
@@ -237,9 +297,30 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
             "Species": species,
             "Similarity": float(r["pident"]) if r["pident"]==r["pident"] else 0.0,
             "evalue": float(r["evalue"]) if r["evalue"]==r["evalue"] else 1.0,
-            "query_coverage": float(r["qcov"]) if "qcov" in r and r["qcov"]==r["qcov"] else 0.0
+            "query_coverage": float(r["qcovs"]) if r.get("qcovs", "") else 0.0,
+            "mismatch": int(r["mismatch"]) if r.get("mismatch", "") else 0,
+            "gapopen": int(r["gapopen"]) if r.get("gapopen", "") else 0,
         })
-    hits = pd.DataFrame(rows, columns=["unique ID","Sequence ID","Kingdom","Phylum","Class","Order","Family","Genus","Species","Similarity","evalue","query_coverage"])
+    hits = pd.DataFrame(
+        rows,
+        columns=[
+            "unique ID",
+            "Sequence ID",
+            "Accession",
+            "Kingdom",
+            "Phylum",
+            "Class",
+            "Order",
+            "Family",
+            "Genus",
+            "Species",
+            "Similarity",
+            "evalue",
+            "query_coverage",
+            "mismatch",
+            "gapopen",
+        ],
+    )
 
     fasta_dir = os.path.dirname(os.path.abspath(query_fasta)); parent = os.path.dirname(fasta_dir)
     raw_dir = os.path.join(parent, "raw_blast"); tax_dir = os.path.join(parent, "taxonomy")
@@ -267,16 +348,16 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
             out_rows.append(row)
             continue
 
-        # Filtro "blando" por query coverage: si hay hits con coverage >= prefer_qcov,
-        # nos quedamos SOLO con esos. Si no, mantenemos todos los hits del query.
+        # Soft query coverage filter: if there are hits with coverage >= prefer_qcov,
+        # keep ONLY those; otherwise keep all hits for the query.
         if float(opts.prefer_qcov) > 0:
             sub_hi = sub[sub["query_coverage"] >= float(opts.prefer_qcov)].copy()
             if not sub_hi.empty:
                 sub = sub_hi
 
         # Hit selection (compatibility with classic APSCALE modes)
-        # - modo 1: Similarity -> evalue
-        # - modo 2: evalue -> Similarity
+        # - mode 1: Similarity -> evalue
+        # - mode 2: evalue -> Similarity
         if int(opts.filter_mode) == 1:
             max_sim = float(sub["Similarity"].max())
             df1 = sub[(sub["Similarity"] - max_sim).abs() <= 1e-9].copy()
@@ -292,39 +373,184 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
 
         rows2_full = []
         for _, rr in df1.iterrows():
-            row = rr[TAX_COLS + ["Similarity","evalue","query_coverage"]].to_dict()
+            row = rr[TAX_COLS + ["Similarity", "evalue", "query_coverage"]].to_dict()
             trim_by_similarity(row, float(max_sim_ref), thr)
             rows2_full.append({"unique ID": qid, **row})
 
-        rows_species = [r for r in rows2_full if r["Species"]]
-        if len(rows_species) == 1:
-            r = rows_species[0].copy(); r["Flag"] = ""; r["Ambiguous taxa"] = ""; r["unique ID"] = qid; out_rows.append(r); continue
-        if len(rows_species) > 1:
-            from collections import Counter
-            tax_keys = [(r["Kingdom"], r["Phylum"], r["Class"], r["Order"], r["Family"], r["Genus"], r["Species"]) for r in rows_species]
-            counts = Counter(tax_keys)
-            maxdup = max(counts.values()) if counts else 0
-            if maxdup > 1 and list(counts.values()).count(maxdup) == 1:
-                dom_tax = max(counts, key=counts.get)
-                dom_row = next(r for r in rows_species
-                               if (r["Kingdom"], r["Phylum"], r["Class"], r["Order"], r["Family"], r["Genus"], r["Species"]) == dom_tax)
-                dom_row = dom_row.copy()
+        # --- Ambiguity handling (F1–F4) ---
+        # This follows the APSCALE / apscale_blast logic:
+        # 1) Remove duplicate hits after similarity-threshold trimming.
+        #    If only one taxon remains, no ambiguity flag is set.
+        # 2) If the best similarity is below the species threshold, progressively drop lower
+        #    ranks until a single assignment remains (no flag).
+        # 3) Otherwise (species-level reference), apply the APSCALE ambiguity flags F1–F4.
+
+        df2 = pd.DataFrame(rows2_full)
+        df3 = df2.drop_duplicates().copy()
+
+        # 1) Only one taxon remains -> no ambiguity
+        if len(df3) == 1:
+            r = df3.iloc[0].to_dict()
+            r["Flag"] = ""
+            r["Ambiguous taxa"] = ""
+            r["unique ID"] = qid
+            out_rows.append(r)
+            continue
+
+        # 2) Assignment & flags
+        if getattr(opts, "flag_scheme", "apscale2") == "apscale":
+            # ---- Legacy APSCALE-BLAST flags (dominant-species logic, etc.)
+
+            # Below species threshold -> trim ranks until unique (no flag)
+            if float(max_sim_ref) < float(thr["Species"]):
+                df_tmp = df3.copy()
+                for level in ["Species", "Genus", "Family", "Order", "Class", "Phylum", "Kingdom"]:
+                    df_tmp[level] = ""
+                    df_tmp = df_tmp.drop_duplicates()
+                    if len(df_tmp) == 1:
+                        break
+                r = df_tmp.iloc[0].to_dict()
+                r["Flag"] = ""
+                r["Ambiguous taxa"] = ""
+                r["unique ID"] = qid
+                out_rows.append(r)
+                continue
+
+            # Species-level reference -> ambiguity flags
+            df2c = df2.copy()
+            df2c["duplicate_count"] = df2c.groupby(df2c.columns.tolist(), dropna=False).transform("size")
+            max_dup = int(df2c["duplicate_count"].max()) if not df2c.empty else 0
+            df_dom = df2c[df2c["duplicate_count"] == max_dup].drop_duplicates()
+
+            # F1: dominant species present
+            if len(df_dom) == 1:
+                dom_row = df_dom.drop(columns=["duplicate_count"]).iloc[0].to_dict()
                 dom_row["Flag"] = "F1 (Dominant species)"
-                dom_row["Ambiguous taxa"] = ", ".join(sorted(set(r["Species"] for r in rows_species)))
+                dom_row["Ambiguous taxa"] = ", ".join(sorted({s for s in df2["Species"].drop_duplicates().tolist() if s}))
                 dom_row["unique ID"] = qid
                 out_rows.append(dom_row)
                 continue
 
-        seen=set(); rows3=[]
-        for r in rows2_full:
-            k=(r["Kingdom"],r["Phylum"],r["Class"],r["Order"],r["Family"],r["Genus"],r["Species"])
-            if k in seen: continue
-            seen.add(k); rows3.append(r)
+            rows3 = df3.to_dict(orient="records")
+            amb_species = sorted({s for s in df2["Species"].drop_duplicates().tolist() if s})
+            chosen = choose_flag_rest(rows3, amb_species)
+            chosen["unique ID"] = qid
+            out_rows.append(chosen)
+            continue
 
-        amb_species = sorted(set([r["Species"] for r in rows2_full if r["Species"]]))
-        chosen = choose_flag_rest(rows3, amb_species)
-        chosen["unique ID"] = qid
-        out_rows.append(chosen)
+        # ---- APSCALE-BLAST2 flags (MRCA-based, no dominance)
+        # Deduplicate by taxonomy before counting diversity (prevents false flags when equivalent records exist).
+        df2_best = df2.copy()
+        df2_best["_evalue_num"] = pd.to_numeric(df2_best.get("evalue"), errors="coerce")
+        df2_best["_sim_num"] = pd.to_numeric(df2_best.get("Similarity"), errors="coerce")
+        # Pick the best hit per unique taxonomy profile
+        df2_best = (
+            df2_best.sort_values(["_sim_num", "_evalue_num"], ascending=[False, True])
+                   .drop_duplicates(subset=TAX_COLS, keep="first")
+                   .drop(columns=["_evalue_num", "_sim_num"], errors="ignore")
+        )
+
+        def _uniq_nonempty(col: str) -> set[str]:
+            if col not in df2_best.columns or df2_best.empty:
+                return set()
+            vals = df2_best[col].fillna("").astype(str)
+            return {v for v in vals.tolist() if v and v.strip()}
+
+        ranks_high_to_low = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"]
+        ranks_low_to_high = list(reversed(ranks_high_to_low))
+        plural = {
+            "Species": "species",
+            "Genus": "genera",
+            "Family": "families",
+            "Order": "orders",
+            "Class": "classes",
+            "Phylum": "phyla",
+            "Kingdom": "kingdoms",
+        }
+
+        # Find deepest common rank (MRCA) across remaining taxa, ignoring blanks where possible.
+        mrca_rank = None
+        for rnk in ranks_high_to_low:
+            vals = _uniq_nonempty(rnk)
+            if len(vals) == 1:
+                mrca_rank = rnk
+                continue
+            # If there are 0 values, taxonomy is incomplete at this rank; stop here.
+            if len(vals) == 0:
+                break
+            # >1 unique values => stop; MRCA is previous (higher) rank.
+            break
+
+        # Determine the diversity rank immediately below the MRCA (used for flag numbering/text).
+        diversity_rank = None
+        if mrca_rank is None:
+            diversity_rank = "Kingdom"
+        else:
+            idx = ranks_high_to_low.index(mrca_rank)
+            if idx < len(ranks_high_to_low) - 1:
+                diversity_rank = ranks_high_to_low[idx + 1]
+            else:
+                diversity_rank = None
+
+        # If there is no diversity below MRCA (i.e., only one taxon remains), no flag.
+        needs_flag = False
+        if diversity_rank is not None:
+            vals = _uniq_nonempty(diversity_rank)
+            needs_flag = len(vals) > 1
+
+        # Choose a representative/best row for metrics
+        best_row = df2_best.copy()
+        best_row["_evalue_num"] = pd.to_numeric(best_row.get("evalue"), errors="coerce")
+        best_row["_sim_num"] = pd.to_numeric(best_row.get("Similarity"), errors="coerce")
+        best_row = best_row.sort_values(["_sim_num", "_evalue_num"], ascending=[False, True]).drop(columns=["_evalue_num", "_sim_num"], errors="ignore")
+        out = best_row.iloc[0].to_dict()
+
+        if not needs_flag:
+            out["Flag"] = ""
+            out["Ambiguous taxa"] = ""
+            out["unique ID"] = qid
+            out_rows.append(out)
+            continue
+
+        # Build flag + ambiguous taxa list.
+        #
+        # Even if we trim the final assignment up to the MRCA (e.g. to Family),
+        # it is useful for manual auditing to keep as much detail as possible
+        # about what the surviving hits actually were. Therefore, instead of
+        # listing only the values at `diversity_rank` (e.g. just genera), we
+        # report each ambiguous taxon at its most specific available rank
+        # (Species > Genus > Family > ...).
+        amb = []
+        if diversity_rank:
+            for _, rr in df2_best.iterrows():
+                label = (
+                    f"{rr['Genus']} {rr['Species']}".strip()
+                    if str(rr.get("Species", "")).strip() and str(rr.get("Genus", "")).strip()
+                    else str(rr.get("Genus", "")).strip()
+                    or str(rr.get("Family", "")).strip()
+                    or str(rr.get("Order", "")).strip()
+                    or str(rr.get("Class", "")).strip()
+                    or str(rr.get("Phylum", "")).strip()
+                    or str(rr.get("Kingdom", "")).strip()
+                )
+                if label:
+                    amb.append(label)
+            amb = sorted(set(amb))
+        flag_num = ranks_low_to_high.index(diversity_rank) + 1 if diversity_rank else 1
+        out["Flag"] = f"Fl{flag_num} Two or more {plural.get(diversity_rank, diversity_rank.lower() + 's')} (trimming to MRCA)"
+        out["Ambiguous taxa"] = ", ".join(amb)
+
+        # Trim taxonomy to MRCA (blank all ranks below MRCA). If MRCA unknown, blank everything.
+        if mrca_rank is None:
+            for c in TAX_COLS:
+                out[c] = ""
+        else:
+            mrca_idx = ranks_high_to_low.index(mrca_rank)
+            for c in ranks_high_to_low[mrca_idx + 1:]:
+                out[c] = ""
+
+        out["unique ID"] = qid
+        out_rows.append(out)
 
     final_df = pd.DataFrame(out_rows, columns=["unique ID"]+TAX_COLS+["Similarity","query_coverage","evalue","Flag","Ambiguous taxa"])
     cat = pd.Categorical(final_df["unique ID"], categories=fasta_order, ordered=True)
@@ -334,6 +560,38 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
     print("Writing taxonomy output...", flush=True)
     with pd.ExcelWriter(out_xlsx) as xw:
         final_df.to_excel(xw, index=False, sheet_name="Taxonomy table")
+
+    # Sidecar run-info for reproducibility (kept small on purpose).
+    try:
+        from datetime import datetime
+
+        runinfo_path = os.path.join(tax_dir, f"{base}.runinfo.txt")
+        db_mtime = ""
+        try:
+            db_mtime = datetime.fromtimestamp(os.path.getmtime(opts.db)).isoformat(timespec="seconds")
+        except Exception:
+            db_mtime = "unknown"
+
+        lines = [
+            f"created_at\t{datetime.now().isoformat(timespec='seconds')}",
+            f"flag_scheme\t{opts.flag_scheme}",
+            f"task\t{opts.task}",
+            f"max_target_seqs\t{opts.max_target_seqs}",
+            f"min_query_coverage\t{opts.min_qcov}",
+            f"min_pident_species\t{opts.min_pident_species}",
+            f"min_pident_genus\t{opts.min_pident_genus}",
+            f"min_pident_family\t{opts.min_pident_family}",
+            f"min_pident_order\t{opts.min_pident_order}",
+            f"min_pident_class\t{opts.min_pident_class}",
+            f"min_pident_phylum\t{opts.min_pident_phylum}",
+            f"db_path\t{opts.db}",
+            f"db_mtime\t{db_mtime}",
+        ]
+        with open(runinfo_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except Exception:
+        # Never fail a run because of metadata.
+        pass
 
     if not opts.keep_tsv:
         print("Cleaning up temporary files...", flush=True)
@@ -349,5 +607,5 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
         except Exception:
             pass
 
-    print(f"BLAST finalizado en {(time.time()-t0)/60:.1f} min.", flush=True)
+    print(f"BLAST finished in {(time.time()-t0)/60:.1f} min.", flush=True)
     return {"raw_xlsx": raw_xlsx, "filtered_xlsx": out_xlsx}

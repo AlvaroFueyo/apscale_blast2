@@ -46,18 +46,29 @@ def _resolve_input_file(input_path: str, workdir: str) -> str:
     if p.lower().endswith(".zip"):
         with zipfile.ZipFile(p, "r") as zf:
             members = [m for m in zf.namelist() if not m.endswith("/")]
-            # prefer fasta-ish members
+            # Extract a FASTA-like member from the archive. If no FASTA is present, this is
+            # likely a precompiled BLAST database archive (indices only) rather than a source FASTA.
+            def is_fasta_member(m: str) -> bool:
+                ml = m.lower()
+                return any(ml.endswith(ext) for ext in FA_EXTS) or any(ml.endswith(ext + ".gz") for ext in FA_EXTS)
+
+            fasta_members = [m for m in members if is_fasta_member(m)]
+            if not fasta_members:
+                raise ValueError(
+                    "No FASTA file was found inside the ZIP archive. If you intended to install a precompiled "
+                    "BLAST database (e.g., a db_*.zip bundle with .nsq/.nin files), use the precompiled database "
+                    "installer instead of the MIDORI2 builder."
+                )
+
+            # Prefer compressed FASTA members first, then plain FASTA.
             def score(m: str) -> int:
                 ml = m.lower()
                 if any(ml.endswith(ext + ".gz") for ext in FA_EXTS):
                     return 0
-                if any(ml.endswith(ext) for ext in FA_EXTS):
-                    return 1
-                return 2
-            members = sorted(members, key=score)
-            if not members:
-                raise ValueError("The ZIP archive is empty.")
-            chosen = members[0]
+                return 1
+
+            fasta_members = sorted(fasta_members, key=score)
+            chosen = fasta_members[0]
             out = os.path.join(workdir, os.path.basename(chosen))
             zf.extract(chosen, workdir)
             # if nested folders, move to out
@@ -89,38 +100,44 @@ def midori2_taxonomy_table(fasta_path: str) -> pd.DataFrame:
     """Parse MIDORI2 headers into a taxonomy table.
 
     MIDORI2 BLAST+ FASTA headers include taxonomy separated by semicolons.
-    This replicates the existing parsing logic used in Till's scripts.
+    This replicates the parsing logic used in Till Macher's builder scripts.
     """
     rows = []
     for hdr in _iter_fasta_headers(fasta_path):
-        # accession = first token before whitespace
-        first_token = hdr.split()[0]
-        parts = first_token.split(";")
-        accession = parts[0]
+        # Accession = first token before whitespace. Taxonomy follows after ';'.
+        tokens = hdr.split()
+        if not tokens:
+            continue
+        first_token = tokens[0]
+        parts = first_token.split(';')
+        if not parts:
+            continue
+        accession = parts[0].lstrip('>')
         tax_parts = parts[1:]
 
         taxonomy = []
-        for i in tax_parts:
-            record_split = i.split("_")
+        for t in tax_parts:
+            record_split = t.split('_')
             if len(record_split) == 2:
                 taxonomy.append(record_split[0])
             else:
-                taxonomy.append(" ".join(record_split[:2]))
+                taxonomy.append(' '.join(record_split[:2]))
+
         # Ensure exactly 7 ranks (superkingdom..species)
-        taxonomy = (taxonomy + [""] * 7)[:7]
+        taxonomy = (taxonomy + [''] * 7)[:7]
         rows.append([accession] + taxonomy)
 
     return pd.DataFrame(
         rows,
         columns=[
-            "Accession",
-            "superkingdom",
-            "phylum",
-            "class",
-            "order",
-            "family",
-            "genus",
-            "species",
+            'Accession',
+            'superkingdom',
+            'phylum',
+            'class',
+            'order',
+            'family',
+            'genus',
+            'species',
         ],
     )
 

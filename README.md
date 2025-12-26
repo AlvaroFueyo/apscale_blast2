@@ -18,11 +18,10 @@ curated reference databases and obtain both **raw BLAST hits** and **taxonomy-aw
 | Database reuse within run | No | Yes (taxonomy cached in memory) |
 | Database handling | External, precompiled databases | Integrated database build and install |
 | Assignment ranking | Similarity-first (mode 1) | Same (mode 1 replicated) |
-| Taxonomic flags | F1–F4 | F1–F4 (unchanged logic) |
+| Taxonomic flags | F1–F4 | F1-F5 New logic (see below) |
 | Query coverage handling | No | BLAST-level hard filter + soft post-filter |
 | BLAST version requirement | Flexible | BLAST+ ≥ 2.17 required |
 | Database location| User-defined path required for each run | Stored in local user data directory and auto-discovered |
-
 
 ## Requirements
 
@@ -96,28 +95,51 @@ Temporary subset FASTA files are created under a run directory and removed by de
   - if any hit has `qcov >= 90%`, only those hits are considered
   - otherwise, the tool falls back to all hits (to avoid losing assignments)
 
-## Ambiguity flags (F1–F4)
+## Reproducibility metadata (sidecar)
 
-apscale_blast2 follows the same *APSCALE/APSCALE-GUI* taxonomic assignment decision tree described by Macher et al. (2023), where ambiguous species-level BLAST results are handled using four flags (F1–F4).
+Each run writes a small sidecar file (e.g. `runinfo.txt`) alongside the outputs, including the effective parameters used
+(`flag_scheme`, thresholds, BLAST task, `max_target_seqs`, and database path/name when available). This keeps tables clean
+while still making results reproducible.
 
-### When are flags applied?
-Flags are only relevant when **multiple species-level candidates remain** after the initial trimming / filtering steps (e.g., similarity-based ranking and threshold trimming). The goal is to either (i) keep a species call when it is clearly supported, or (ii) **downgrade** the assignment to genus or higher ranks when the ambiguity cannot be resolved.
+## Ambiguity flags
 
-### Flag definitions
+apscale_blast2 supports **two flagging/assignment schemes**, selectable via `--flag-scheme`.
 
-- **F1 — Dominant taxon**  
-  If, after trimming, a *dominant* species-level taxon remains, it is selected as the final assignment (“F1 – Dominant taxon”).
+### `--flag-scheme apscale2` (default)
 
-- **F2 — Two species, one genus**  
-  If exactly **two species** of the **same genus** remain, the assignment is stored as the genus plus both possible species epithets separated by a slash (e.g., *Leuciscus idus/leuciscus*).
+Designed for **curated local databases** (including de-duplicated references) where “dominant taxon” heuristics are not very informative.
 
-- **F3 — Multiple species of one genus**  
-  If **one genus** remains but **more than two species** are still possible, the assignment is saved at genus level (e.g., *Hucho sp.*), with the list of ambiguous species retained as metadata.
+After applying identity/coverage thresholds and de-duplicating hits by taxon, the tool checks how many *unique taxa* remain and trims the final assignment to the **MRCA** (most recent common ancestor) when needed:
 
-- **F4 — Multiple genera (Trimming to MRCA)**  
-  If candidates belong to **more than one genus** and no dominant taxon is present, the assignment is trimmed to the **most recent common taxon** (MRCA; Most Recent Common Ancestor, the lowest shared rank across the remaining candidates).
+- **No flag:** only one species remains.
+- **Fl1 — Two or more species (trimming to MRCA):** multiple species remain but they collapse to a single genus → final assignment is trimmed to the genus MRCA and the candidate species are stored under `Ambiguous taxa`.
+- **Fl2/Fl3/… — Two or more genera/families/... (trimming to MRCA):** when multiple genera (or higher ranks) remain, the assignment is trimmed to the MRCA rank and all remaining candidates are stored under `Ambiguous taxa`.
+
+If some hits are missing ranks (e.g. genus/species is empty), those missing values are ignored **when other hits provide a resolved value**, so you do not get false ambiguity just because one record is incompletely annotated.
+
+### `--flag-scheme apscale` (legacy)
+
+Replicates the **APSCALE / APSCALE-GUI** decision tree (F1–F4) described by Macher et al. (2023). When using this mode, apscale_blast2 also restores key legacy parameters (e.g. `task=blastn`, `max-target-seqs=20`, and no query-coverage filtering).
 
 Macher T-H, Schütz R, Yildiz A, Beermann AJ, Leese F (2023) ﻿Evaluating five primer pairs for environmental DNA metabarcoding of Central European fish species based on mock communities. Metabarcoding and Metagenomics 7: e103856. [https://doi.org/10.3897/mbmg.7.103856](https://doi.org/10.3897/mbmg.7.103856)
+
+## Wizard database defaults
+
+When running the interactive wizard, apscale_blast2 looks for a per-database defaults file:
+
+- `<db_folder>/apscale_blast2_defaults.json`
+
+If present, the wizard loads and displays these defaults (identity thresholds, task, `max_target_seqs`, etc.) and lets you
+edit them. If the file is missing, global defaults are shown; if you change any values, the wizard automatically creates
+`apscale_blast2_defaults.json` inside the database folder so you do not need to remember them next time.
+
+## Raw BLAST output
+
+The raw BLAST table includes additional columns useful for manual review, such as:
+
+- subject identifier / accession (`sseqid` / `saccver` depending on the BLAST installation)
+- `mismatch`
+- `gapopen`
 
 ## Databases
 

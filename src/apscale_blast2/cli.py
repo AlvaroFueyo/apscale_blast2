@@ -19,8 +19,9 @@ from typing import Dict, List, Tuple
 
 from .blast_runner import run, RunOptions
 from .dbs import DatabaseSpec, validate_database
+from .db_defaults import get_thresholds_for_db, save_db_defaults
 from .io_utils import read_db_map
-from .db_home import get_db_home, db_folder_for_name
+from .db_home import get_db_home, db_folder_for_name, install_precompiled_db_zip
 from .db_build_midori2 import build_midori2_db
 from .db_build_trnl import build_trnl_db
 from .db_build_unite import build_unite_db
@@ -186,7 +187,19 @@ def build_parser():
         default="megablast",
         help="BLAST task: megablast is faster for similar barcodes/amplicons; blastn is more sensitive.",
     )
-    g_blast.add_argument("--max-target-seqs", type=int, default=20, help="Maximum hits reported per query.")
+    g_blast.add_argument("--max-target-seqs", type=int, default=30, help="Maximum hits reported per query.")
+
+    g_flags = p.add_argument_group("flags")
+    g_flags.add_argument(
+        "--flag-scheme",
+        choices=["apscale2", "apscale"],
+        default="apscale2",
+        help=(
+            "Which flagging/assignment scheme to use. "
+            "'apscale2' is the new MRCA-based scheme (default). "
+            "'apscale' replicates the original apscale_blast behaviour (legacy)."
+        ),
+    )
     g_blast.add_argument("--no-masking", action="store_true", help="Disable DUST/soft masking (default: enabled).")
     g_blast.add_argument("--blastn-exe", default="blastn", help="Path/name of the blastn executable.")
     g_blast.add_argument("--makeblastdb-exe", default="makeblastdb", help="Path/name of the makeblastdb executable.")
@@ -252,17 +265,20 @@ def prompt_dir(prompt_text: str) -> str:
 def choose_db_for_fasta(fa: str, dbs: List[Tuple[str, str]], last_choice: int | None) -> str:
     print(f"\nFASTA: {os.path.basename(fa)}")
     print("  [0] Build and install a new database (recipe)")
-    print("  [S] Skip this FASTA (do not analyse)")
+    print("  [I] Install a precompiled database (.zip)")
+    print("  [S] Skip this FASTA (do not analyze)")
     for i, (lab, path) in enumerate(dbs, start=1):
         print(f"  [{i}] {lab}")
     if last_choice:
         print(f"Press ENTER to reuse [{last_choice}]")
     while True:
-        s = input("Choose DB (number / S): ").strip()
+        s = input("Choose DB (number / S / I): ").strip()
         if s == "" and last_choice is not None:
             return str(last_choice)
         if s.lower() in {"s", "skip"}:
             return "SKIP"
+        if s.lower() in {"i", "install"}:
+            return "INSTALL"
         if s.isdigit():
             k = int(s)
             if k == 0:
@@ -296,6 +312,7 @@ def prompt_builder_choice() -> str:
         ("silva", "SILVA (FASTA; optional taxonomy table)") ,
         ("pr2", "PR2 (FASTA/FASTA.GZ/ZIP)") ,
         ("diatbarcode", "DiatBarcode (XLSX release)") ,
+        ("precompiled_zip", "Precompiled BLAST database bundle (.zip; indices + taxonomy)") ,
     ]
     for i,(_,label) in enumerate(opts, start=1):
         print(f"  [{i}] {label}")
@@ -312,6 +329,8 @@ def _auto_name(recipe: str, src_path: str) -> str:
         if base.lower().endswith(suf):
             base = base[: -len(suf)]
             break
+    if base.lower().startswith("db_"):
+        base = base[3:]
     base = base.replace(" ", "_")
     return f"{recipe}_{base}" if not base.lower().startswith(recipe) else base
 
@@ -329,6 +348,15 @@ def _prompt_optional_name(prompt_text: str) -> str | None:
 def main(argv=None):
     p = build_parser()
     a = p.parse_args(argv)
+
+    # Legacy APSCALE-BLAST mode: replicate the *behaviour* and the *defaults*
+    # of the original apscale_blast implementation.
+    # - task: blastn (not megablast)
+    # - no query coverage filters
+    if getattr(a, "flag_scheme", "apscale2") == "apscale":
+        a.task = "blastn"
+        a.min_qcov = 0.0
+        a.max_target_seqs = 20
 
     logging.basicConfig(level=getattr(logging, a.log_level), format="%(levelname)s: %(message)s")
     logger = logging.getLogger("apscale_blast2")
@@ -414,6 +442,26 @@ def main(argv=None):
             if sel == "SKIP":
                 selections.append((fa, None))
                 continue
+            if sel == "INSTALL":
+                src = _prompt_file_path("Path to the precompiled database ZIP (.zip): ")
+                nm = _prompt_optional_name("Optional short name for the installed database (ENTER=auto): ")
+                base = os.path.splitext(os.path.basename(src))[0]
+                if base.lower().startswith("db_"):
+                    base = base[3:]
+                nm2 = nm or base
+                safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in nm2.strip())
+                if not safe.lower().startswith("db_"):
+                    safe = "db_" + safe
+                out_dir = os.path.join(db_home, safe)
+                build_reqs[out_dir] = {"builder": "precompiled_zip", "input": src, "name": nm2}
+                label = f"Precompiled:{os.path.basename(out_dir)}"
+
+                # Make the installed database immediately available for the next FASTA files.
+                dbs.append((label, out_dir))
+                last = len(dbs)
+                selections.append((fa, out_dir))
+                continue
+
             if sel == "0":
                 recipe = prompt_builder_choice()
 
@@ -457,6 +505,19 @@ def main(argv=None):
                     out_dir = db_folder_for_name(db_home, nm2)
                     build_reqs[out_dir] = {"builder": recipe, "input": src, "name": nm2}
                     label = f"PR2:{os.path.basename(out_dir)}"
+                elif recipe == "precompiled_zip":
+                    src = _prompt_file_path("Path to the precompiled database ZIP (.zip): ")
+                    nm = _prompt_optional_name("Optional short name for the installed database (ENTER=auto): ")
+                    base = os.path.splitext(os.path.basename(src))[0]
+                    if base.lower().startswith("db_"):
+                        base = base[3:]
+                    nm2 = nm or base
+                    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in nm2.strip())
+                    if not safe.lower().startswith("db_"):
+                        safe = "db_" + safe
+                    out_dir = os.path.join(db_home, safe)
+                    build_reqs[out_dir] = {"builder": "precompiled_zip", "input": src, "name": nm2}
+                    label = f"Precompiled:{os.path.basename(out_dir)}"
                 else:
                     # midori2
                     src = _prompt_file_path("Path to the MIDORI2 file (.fasta/.fasta.gz/.zip): ")
@@ -482,6 +543,46 @@ def main(argv=None):
         else:
             print(f"  - {os.path.basename(fa)}  →  {dbp}", flush=True)
 
+    # Per-database defaults (wizard): identity thresholds
+    # We do this once per unique database so repeated FASTA→DB assignments
+    # do not re-prompt.
+    thresholds_cache: Dict[str, str] = {}
+    for _, dbp in selections:
+        if not dbp or dbp in thresholds_cache:
+            continue
+        current, src, defaults_path = get_thresholds_for_db(dbp, a.thresholds)
+        # Human-friendly label for prompts/logging (database folder name).
+        db_label = os.path.basename(os.path.normpath(dbp))
+        print(f"\nIdentity thresholds for selected database: {db_label}", flush=True)
+        print(f"  - Source: {src}", flush=True)
+        print("  - Format: Species,Genus,Family,Order,Class", flush=True)
+        print(f"  - Current: {current}", flush=True)
+        new_val = input("  Enter new thresholds (or press ENTER to keep): ").strip()
+        if new_val:
+            # Validate early (and keep prompting until valid)
+            while True:
+                parts = [p.strip() for p in new_val.split(",") if p.strip()]
+                ok = len(parts) == 5
+                if ok:
+                    try:
+                        nums = [float(p) for p in parts]
+                        ok = all(0.0 <= x <= 100.0 for x in nums)
+                    except Exception:
+                        ok = False
+                if ok:
+                    current = ",".join(parts)
+                    try:
+                        save_db_defaults(defaults_path, current)
+                        print(f"  Saved: {defaults_path}", flush=True)
+                    except Exception as e:
+                        print(f"  Warning: could not save defaults file ({e}). Using the provided thresholds for this run.", flush=True)
+                    break
+                print("  Invalid value. Please enter 5 comma-separated numbers between 0 and 100.", flush=True)
+                new_val = input("  Thresholds (Species,Genus,Family,Order,Class): ").strip()
+                if not new_val:
+                    break
+        thresholds_cache[dbp] = current
+
     print("Preparing job: creating temporary files and configuring options...", flush=True)
 
     # 1) Build new databases (if any)
@@ -501,8 +602,13 @@ def main(argv=None):
             src = info.get("input", "")
             tax = info.get("taxonomy", "")
 
-            print(f"  - Building {recipe.upper()}: {name}", flush=True)
-            if recipe == "trnl":
+            if recipe == "precompiled_zip":
+                print(f"  - Installing PRECOMPILED: {name}", flush=True)
+            else:
+                print(f"  - Building {recipe.upper()}: {name}", flush=True)
+            if recipe == "precompiled_zip":
+                built = install_precompiled_db_zip(zip_path=src, db_home=db_home, name=name)
+            elif recipe == "trnl":
                 built = build_trnl_db(input_fasta=src, taxonomy_path=tax, db_home=db_home, name=name, makeblastdb_exe=a.makeblastdb_exe)
             elif recipe == "unite":
                 built = build_unite_db(input_path=src, db_home=db_home, name=name, makeblastdb_exe=a.makeblastdb_exe)
@@ -523,11 +629,13 @@ def main(argv=None):
             continue
         validate_database(dbp)
 
-    opts = RunOptions(
+    # Base options (thresholds may vary per DB in wizard mode)
+    opts_base = dict(
         threads=int(a.threads), workers=int(a.workers), subset_size=int(a.subset_size),
         task=a.task, max_target_seqs=int(a.max_target_seqs), masking=(not a.no_masking),
         min_qcov=float(a.min_qcov), max_evalue=float(a.max_evalue), min_pident=float(a.min_pident),
-        blastn_exe=a.blastn_exe, keep_tsv=bool(a.keep_tsv), thresholds=a.thresholds,
+        flag_scheme=getattr(a, "flag_scheme", "apscale2"),
+        blastn_exe=a.blastn_exe, keep_tsv=bool(a.keep_tsv),
         log_level=a.log_level, inline_perc_identity=bool(a.inline_perc_identity),
     )
 
@@ -539,6 +647,8 @@ def main(argv=None):
         if dbp is None:
             print(f"Skipped: {os.path.basename(fa)}", flush=True)
             continue
+        thresholds = thresholds_cache.get(dbp, a.thresholds)
+        opts = RunOptions(**opts_base, thresholds=thresholds)
         out_dir = os.path.join(tmp_root, os.path.splitext(os.path.basename(fa))[0])
         os.makedirs(out_dir, exist_ok=True)
         dbspec = DatabaseSpec(path=dbp)
