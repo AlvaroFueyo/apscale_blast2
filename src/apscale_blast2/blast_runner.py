@@ -38,7 +38,7 @@ BLAST_OUTFMT = (
 _TAX_CACHE: Dict[str, Dict[str, List[str]]] = {}
 
 def _tax_cache_key(db_prefix: str) -> str:
-    # Normaliza y absolutiza para que rutas equivalentes se cacheen igual.
+    # Normalise and absolutise so that equivalent routes are cached in the same way.
     try:
         p = os.path.abspath(db_prefix)
     except Exception:
