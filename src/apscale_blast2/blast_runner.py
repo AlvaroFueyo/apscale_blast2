@@ -4,7 +4,7 @@ This module:
 - Splits input FASTA files into smaller subsets
 - Runs local NCBI BLAST (blastn/megablast) against a selected database
 - Applies prefilters and APSCALE-like selection/flag logic
-- Writes Excel outputs (raw BLAST hits and taxonomy assignments)
+- Writes outputs (Excel or Parquet) for raw BLAST hits and taxonomy assignments
 
 Note: BLAST databases are accessed by the external BLAST executables; we only
 cache the taxonomy mapping table in-memory within a single Python run.
@@ -23,6 +23,7 @@ from .dbs import DatabaseSpec, ensure_db_prefix
 from .taxmap import load_taxmap_as_dict
 from .filtering import thresholds_to_dict, trim_by_similarity, choose_flag_rest
 from .taxonomy_clean import clean_species, clean_genus
+from . import __version__
 
 # Raw BLAST columns (tabular outfmt 6). Keep this stable unless you bump a major version.
 # - sseqid / sacc for easy trace-back to local DB / GenBank
@@ -74,6 +75,11 @@ class RunOptions:
     thresholds: str = "97,95,90,87,85"
     log_level: str = "INFO"
     inline_perc_identity: bool = True
+
+    # Output
+    # - excel: write .xlsx using openpyxl (default)
+    # - parquet: write .parquet.snappy (requires pyarrow)
+    output_format: str = "excel"
 
     # Flagging / assignment scheme
     # - apscale2: new MRCA-based trimming flags (default)
@@ -189,6 +195,60 @@ def _extract_accession(subject_id: str) -> str:
         return m.group(1)
     return core
 
+
+def _try_numeric(series: pd.Series, *, integer: bool) -> pd.Series:
+    """Best-effort dtype coercion.
+
+    We try to convert columns that should be numeric (for Parquet exports and
+    general downstream sanity). If conversion produces only NaNs while the
+    original column had non-empty values, we keep the original dtype to avoid
+    breaking edge-case inputs.
+    """
+
+    if series is None:
+        return series
+
+    s0 = series
+    s = pd.to_numeric(s0, errors="coerce")
+    # If conversion failed completely but there are non-empty original values,
+    # keep as-is.
+    try:
+        has_nonempty = s0.astype(str).str.strip().ne("").any()
+    except Exception:
+        has_nonempty = True
+    if has_nonempty and s.notna().sum() == 0:
+        return s0
+
+    if integer:
+        try:
+            non_na = s.dropna()
+            if not non_na.empty and (non_na % 1 == 0).all():
+                return s.round().astype("Int64")
+        except Exception:
+            pass
+    return s.astype(float)
+
+
+def _prepare_output_dtypes(df: pd.DataFrame, *, int_cols: list[str], float_cols: list[str]) -> pd.DataFrame:
+    out = df.copy()
+    for c in int_cols:
+        if c in out.columns:
+            out[c] = _try_numeric(out[c], integer=True)
+    for c in float_cols:
+        if c in out.columns:
+            out[c] = _try_numeric(out[c], integer=False)
+    return out
+
+
+def _write_table(df: pd.DataFrame, *, path: str, fmt: str, sheet_name: str | None = None):
+    fmt = (fmt or "excel").lower().strip()
+    if fmt == "parquet":
+        df.to_parquet(path, index=False, compression="snappy")
+        return
+    # Default: Excel
+    with pd.ExcelWriter(path) as xw:
+        df.to_excel(xw, index=False, sheet_name=(sheet_name or "Sheet1"))
+
 def _prefilter_hits(raw: pd.DataFrame, min_qcov: float, max_evalue: float, min_pident: float) -> pd.DataFrame:
     df = raw.copy()
     for c in ["pident","evalue","qcovs","qcovhsp"]:
@@ -278,15 +338,26 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
         else:
             genus = ""; species = ""
         subject_id = key or r["sseqid"]
-        # BLAST may not populate sacc/saccver for custom subject ids. Provide an
-        # explicit accession column derived from the subject id to improve
-        # traceability (e.g. easy follow-up in GenBank).
-        accession = r.get("saccver", "") or r.get("sacc", "")
-        accession = accession or _extract_accession(subject_id)
+        # BLAST may not populate sacc/saccver for custom subject ids; also, some
+        # curated DB headers embed taxonomy after a delimiter (e.g. "###...").
+        # Always normalise to an accession-like identifier for cleaner exports.
+        accession_src = r.get("saccver", "") or r.get("sacc", "") or subject_id
+        accession = _extract_accession(accession_src)
+
+        # Coverage: prefer qcovs when present; fallback to qcovhsp.
+        qcov = None
+        try:
+            if pd.notna(r.get("qcovs")):
+                qcov = float(r["qcovs"])
+            elif pd.notna(r.get("qcovhsp")):
+                qcov = float(r["qcovhsp"])
+        except Exception:
+            qcov = None
+        if qcov is None or qcov != qcov:
+            qcov = 0.0
 
         rows.append({
             "unique ID": r["qseqid"],
-            "Sequence ID": key or r["sseqid"],
             "Accession": accession,
             "Kingdom": (ranks[0] if ranks else ""),
             "Phylum":  (ranks[1] if ranks else ""),
@@ -297,7 +368,7 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
             "Species": species,
             "Similarity": float(r["pident"]) if r["pident"]==r["pident"] else 0.0,
             "evalue": float(r["evalue"]) if r["evalue"]==r["evalue"] else 1.0,
-            "query_coverage": float(r["qcovs"]) if r.get("qcovs", "") else 0.0,
+            "query_coverage": float(qcov),
             "mismatch": int(r["mismatch"]) if r.get("mismatch", "") else 0,
             "gapopen": int(r["gapopen"]) if r.get("gapopen", "") else 0,
         })
@@ -305,7 +376,6 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
         rows,
         columns=[
             "unique ID",
-            "Sequence ID",
             "Accession",
             "Kingdom",
             "Phylum",
@@ -322,14 +392,23 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
         ],
     )
 
+    # Ensure sane dtypes (especially important for Parquet exports)
+    hits = _prepare_output_dtypes(
+        hits,
+        int_cols=["mismatch", "gapopen"],
+        float_cols=["Similarity", "evalue", "query_coverage"],
+    )
+
     fasta_dir = os.path.dirname(os.path.abspath(query_fasta)); parent = os.path.dirname(fasta_dir)
     raw_dir = os.path.join(parent, "raw_blast"); tax_dir = os.path.join(parent, "taxonomy")
     os.makedirs(raw_dir, exist_ok=True); os.makedirs(tax_dir, exist_ok=True)
     base = os.path.splitext(os.path.basename(query_fasta))[0]
-    raw_xlsx = os.path.join(raw_dir, f"{base}_raw_blast.xlsx")
+    fmt = (getattr(opts, "output_format", "excel") or "excel").lower().strip()
+    ext = ".parquet.snappy" if fmt == "parquet" else ".xlsx"
+
+    raw_path = os.path.join(raw_dir, f"{base}_raw_blast{ext}")
     print("Writing raw output...", flush=True)
-    with pd.ExcelWriter(raw_xlsx) as xw:
-        hits.to_excel(xw, index=False, sheet_name="raw")
+    _write_table(hits, path=raw_path, fmt=fmt, sheet_name="raw")
 
     print("Applying flags and similarity trimming...", flush=True)
     thr = thresholds_to_dict(opts.thresholds)
@@ -450,11 +529,30 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
                    .drop(columns=["_evalue_num", "_sim_num"], errors="ignore")
         )
 
+        # Some reference taxmaps occasionally contain rank placeholders (e.g. "genus")
+        # as literal values in taxonomy columns. Treat these as missing.
+        _placeholders = {"kingdom", "phylum", "class", "order", "family", "genus", "species"}
+
+        def _clean_tax(v: object) -> str:
+            """Normalise taxonomy cell values.
+
+            Drops blanks and rank placeholders such as 'genus' that may appear in
+            some reference taxmaps.
+            """
+            if v is None:
+                return ""
+            s = str(v).strip()
+            if not s:
+                return ""
+            if s.lower() in _placeholders:
+                return ""
+            return s
+
         def _uniq_nonempty(col: str) -> set[str]:
             if col not in df2_best.columns or df2_best.empty:
                 return set()
-            vals = df2_best[col].fillna("").astype(str)
-            return {v for v in vals.tolist() if v and v.strip()}
+            vals = df2_best[col].fillna("").astype(str).map(_clean_tax)
+            return {v for v in vals.tolist() if v}
 
         ranks_high_to_low = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"]
         ranks_low_to_high = list(reversed(ranks_high_to_low))
@@ -520,20 +618,35 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
         # listing only the values at `diversity_rank` (e.g. just genera), we
         # report each ambiguous taxon at its most specific available rank
         # (Species > Genus > Family > ...).
-        amb = []
+        amb: list[str] = []
         if diversity_rank:
             for _, rr in df2_best.iterrows():
-                label = (
-                    f"{rr['Genus']} {rr['Species']}".strip()
-                    if str(rr.get("Species", "")).strip() and str(rr.get("Genus", "")).strip()
-                    else str(rr.get("Genus", "")).strip()
-                    or str(rr.get("Family", "")).strip()
-                    or str(rr.get("Order", "")).strip()
-                    or str(rr.get("Class", "")).strip()
-                    or str(rr.get("Phylum", "")).strip()
-                    or str(rr.get("Kingdom", "")).strip()
-                )
-                if label:
+                genus = _clean_tax(rr.get("Genus", ""))
+                species = _clean_tax(rr.get("Species", ""))
+                family = _clean_tax(rr.get("Family", ""))
+                order = _clean_tax(rr.get("Order", ""))
+                klass = _clean_tax(rr.get("Class", ""))
+                phylum = _clean_tax(rr.get("Phylum", ""))
+                kingdom = _clean_tax(rr.get("Kingdom", ""))
+
+                label = ""
+                if species:
+                    if genus:
+                        # Many taxmaps store Species as a full binomial ("Genus species").
+                        if species.lower().startswith((genus + " ").lower()):
+                            label = species
+                        else:
+                            # If Species is just the epithet, prefix the genus; otherwise keep as-is.
+                            label = f"{genus} {species}".strip() if " " not in species else species
+                    else:
+                        label = species
+                elif genus:
+                    label = genus
+                else:
+                    label = family or order or klass or phylum or kingdom
+
+                # Guard against placeholders slipping through (best-effort)
+                if label and label.lower() not in _placeholders:
                     amb.append(label)
             amb = sorted(set(amb))
         flag_num = ranks_low_to_high.index(diversity_rank) + 1 if diversity_rank else 1
@@ -556,35 +669,56 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
     cat = pd.Categorical(final_df["unique ID"], categories=fasta_order, ordered=True)
     final_df = final_df.assign(_ord=cat).sort_values("_ord", kind="stable").drop(columns=["_ord"])
 
-    out_xlsx = os.path.join(tax_dir, f"{base}_taxonomy.xlsx")
+    final_df = _prepare_output_dtypes(
+        final_df,
+        int_cols=[],
+        float_cols=["Similarity", "query_coverage", "evalue"],
+    )
+
+    out_path = os.path.join(tax_dir, f"{base}_taxonomy{ext}")
     print("Writing taxonomy output...", flush=True)
-    with pd.ExcelWriter(out_xlsx) as xw:
-        final_df.to_excel(xw, index=False, sheet_name="Taxonomy table")
+    _write_table(final_df, path=out_path, fmt=fmt, sheet_name="Taxonomy table")
 
     # Sidecar run-info for reproducibility (kept small on purpose).
     try:
         from datetime import datetime
 
         runinfo_path = os.path.join(tax_dir, f"{base}.runinfo.txt")
-        db_mtime = ""
+
+        # DB timestamp (best-effort)
+        db_mtime = "unknown"
         try:
-            db_mtime = datetime.fromtimestamp(os.path.getmtime(opts.db)).isoformat(timespec="seconds")
+            # Prefer the index file timestamp if we can find it.
+            base_dir = os.path.dirname(db_prefix)
+            cand = None
+            for suf in [".nal", ".nin", ".nhr", ".nsq"]:
+                p = db_prefix + suf
+                if os.path.exists(p):
+                    cand = p
+                    break
+            cand = cand or (db.path if os.path.exists(db.path) else base_dir)
+            db_mtime = datetime.fromtimestamp(os.path.getmtime(cand)).isoformat(timespec="seconds")
         except Exception:
-            db_mtime = "unknown"
+            pass
 
         lines = [
             f"created_at\t{datetime.now().isoformat(timespec='seconds')}",
+            f"tool_version\t{__version__}",
+            f"output_format\t{fmt}",
             f"flag_scheme\t{opts.flag_scheme}",
+            f"filter_mode\t{getattr(opts, 'filter_mode', 1)}",
             f"task\t{opts.task}",
             f"max_target_seqs\t{opts.max_target_seqs}",
+            f"threads\t{opts.threads}",
+            f"workers\t{opts.workers}",
+            f"subset_size\t{opts.subset_size}",
             f"min_query_coverage\t{opts.min_qcov}",
-            f"min_pident_species\t{opts.min_pident_species}",
-            f"min_pident_genus\t{opts.min_pident_genus}",
-            f"min_pident_family\t{opts.min_pident_family}",
-            f"min_pident_order\t{opts.min_pident_order}",
-            f"min_pident_class\t{opts.min_pident_class}",
-            f"min_pident_phylum\t{opts.min_pident_phylum}",
-            f"db_path\t{opts.db}",
+            f"prefer_query_coverage\t{opts.prefer_qcov}",
+            f"max_evalue\t{opts.max_evalue}",
+            f"min_pident\t{opts.min_pident}",
+            f"thresholds\t{opts.thresholds}",
+            f"db_path\t{db.path}",
+            f"db_prefix\t{db_prefix}",
             f"db_mtime\t{db_mtime}",
         ]
         with open(runinfo_path, "w", encoding="utf-8") as fh:
@@ -608,4 +742,10 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
             pass
 
     print(f"BLAST finished in {(time.time()-t0)/60:.1f} min.", flush=True)
-    return {"raw_xlsx": raw_xlsx, "filtered_xlsx": out_xlsx}
+    return {
+        "raw_output": raw_path,
+        "taxonomy_output": out_path,
+        # Backward-compatible keys (paths; may be .xlsx or .parquet.snappy)
+        "raw_xlsx": raw_path,
+        "filtered_xlsx": out_path,
+    }

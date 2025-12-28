@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apscale-blast2"
-version = "1.1.0"
+version = "1.1.1"
 description = "APSCALE-like BLAST with per-FASTA DB selection, APSCALE flags, taxonomy cleaning, tqdm progress, Python 3.13 compatible."
 readme = "README.md"
 requires-python = ">=3.10"

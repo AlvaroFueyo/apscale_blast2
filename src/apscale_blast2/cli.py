@@ -245,6 +245,12 @@ def build_parser():
 
     # Output/debug
     g_out = p.add_argument_group("Output")
+    g_out.add_argument(
+        "--output-format",
+        choices=["excel", "parquet"],
+        default="excel",
+        help="Output table format for raw hits and taxonomy tables.",
+    )
     g_out.add_argument("--keep-tsv", action="store_true", help="Keep intermediate TSV files (default: cleaned up).")
     g_out.add_argument(
         "--log-level",
@@ -637,6 +643,7 @@ def main(argv=None):
         flag_scheme=getattr(a, "flag_scheme", "apscale2"),
         blastn_exe=a.blastn_exe, keep_tsv=bool(a.keep_tsv),
         log_level=a.log_level, inline_perc_identity=bool(a.inline_perc_identity),
+        output_format=str(getattr(a, "output_format", "excel")),
     )
 
     tmp_root = os.path.join(fasta_dir, "_apscale_blast2_tmp")
@@ -653,7 +660,7 @@ def main(argv=None):
         os.makedirs(out_dir, exist_ok=True)
         dbspec = DatabaseSpec(path=dbp)
         res = run(fa, out_dir, dbspec, opts)
-        print(f"Done: {res['filtered_xlsx']}", flush=True)
+        print(f"Done: {res.get('taxonomy_output')}", flush=True)
 
     try:
         if os.path.isdir(tmp_root) and not os.listdir(tmp_root):

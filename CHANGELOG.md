@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.1 — Output polish, Parquet export, and runinfo fix
+
+- Raw BLAST export: removed the redundant `Sequence ID` column.
+- Raw BLAST export: `Accession` is now normalised (taxonomy suffixes such as `###...` are stripped; coordinate-like suffixes are reduced to `ACCESSION.VERSION` when possible).
+- Added `--output-format {excel,parquet}` to write outputs as `.xlsx` (default) or compressed Parquet (`.parquet.snappy`).
+- Fixed `runinfo` sidecar generation and ensured it is written to the `taxonomy/` output folder.
+- Best-effort numeric dtype coercion for exported tables (keeps strings as strings, and metrics as int/float when possible).
+- Fixed `Ambiguous taxa` formatting in `apscale2`: avoids duplicated genus in binomials (e.g., `Cyprinus carpio` instead of `Cyprinus Cyprinus carpio`) and filters rank placeholders like `genus`.
+
 ## 1.1.0 — New flag scheme (apscale2), legacy compatibility, and reproducibility
 
 - Added `--flag-scheme` to select between:
