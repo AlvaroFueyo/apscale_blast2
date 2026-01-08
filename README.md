@@ -1,8 +1,6 @@
 # apscale_blast2
 
-`apscale_blast2` is a local BLAST-based taxonomic assignment tool inspired by **apscale_blast**.
-It preserves the APSCALE-style assignment logic (mode-1 hit selection and F1–F4 flags) while adding
-an interactive wizard and built-in database management.
+`apscale_blast2` is a local BLAST-based taxonomic assignment tool inspired by [**apscale_blast**](https://github.com/TillMacher/apscale_blast).
 
 ## Project overview
 
