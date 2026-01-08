@@ -213,6 +213,17 @@ def build_parser():
         help="Hard minimum query coverage (percent) applied at BLAST level (qcovs/qcovhsp).",
     )
     g_flt.add_argument(
+        "--prefer-qcov",
+        "--prefer-query-coverage",
+        dest="prefer_qcov",
+        type=float,
+        default=90.0,
+        help=(
+            "Soft preferred query coverage (percent). If at least one hit for a query has coverage >= this value, "
+            "only those hits are considered; otherwise all hits are kept. Set to 0 to disable."
+        ),
+    )
+    g_flt.add_argument(
         "--max-evalue",
         type=float,
         default=1e-3,
@@ -358,10 +369,11 @@ def main(argv=None):
     # Legacy APSCALE-BLAST mode: replicate the *behaviour* and the *defaults*
     # of the original apscale_blast implementation.
     # - task: blastn (not megablast)
-    # - no query coverage filters
+    # - no query coverage filters (neither hard nor soft)
     if getattr(a, "flag_scheme", "apscale2") == "apscale":
         a.task = "blastn"
         a.min_qcov = 0.0
+        a.prefer_qcov = 0.0
         a.max_target_seqs = 20
 
     logging.basicConfig(level=getattr(logging, a.log_level), format="%(levelname)s: %(message)s")
@@ -391,6 +403,7 @@ def main(argv=None):
     a.subset_size     = validate_range("--subset-size", float(a.subset_size), 1, 10000, integer=True)
     a.max_target_seqs = validate_range("--max-target-seqs", float(a.max_target_seqs), 1, 1000, integer=True)
     a.min_qcov        = validate_range("--min-qcov", float(a.min_qcov), 0.0, 100.0)
+    a.prefer_qcov     = validate_range("--prefer-qcov", float(getattr(a, "prefer_qcov", 90.0)), 0.0, 100.0)
     a.max_evalue      = validate_range("--max-evalue", float(a.max_evalue), 1e-300, 1.0)
     a.min_pident      = validate_range("--min-pident", float(a.min_pident), 0.0, 100.0)
 
@@ -639,7 +652,7 @@ def main(argv=None):
     opts_base = dict(
         threads=int(a.threads), workers=int(a.workers), subset_size=int(a.subset_size),
         task=a.task, max_target_seqs=int(a.max_target_seqs), masking=(not a.no_masking),
-        min_qcov=float(a.min_qcov), max_evalue=float(a.max_evalue), min_pident=float(a.min_pident),
+        min_qcov=float(a.min_qcov), prefer_qcov=float(a.prefer_qcov), max_evalue=float(a.max_evalue), min_pident=float(a.min_pident),
         flag_scheme=getattr(a, "flag_scheme", "apscale2"),
         blastn_exe=a.blastn_exe, keep_tsv=bool(a.keep_tsv),
         log_level=a.log_level, inline_perc_identity=bool(a.inline_perc_identity),

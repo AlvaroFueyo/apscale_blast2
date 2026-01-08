@@ -22,6 +22,7 @@ curated reference databases and obtain both **raw BLAST hits** and **taxonomy-aw
 | Query coverage handling | No | BLAST-level hard filter + soft post-filter |
 | BLAST version requirement | Flexible | BLAST+ ≥ 2.17 required |
 | Database location| User-defined path required for each run | Stored in local user data directory and auto-discovered |
+| Output format | .xslx | .xslx or .parquet.snappy |
 
 ## Requirements
 

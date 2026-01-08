@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fixed legacy `--flag-scheme apscale` so it disables *both* query coverage filters (`min_query_coverage` and `prefer_query_coverage`).
+- Added `--prefer-qcov/--prefer-query-coverage` to control the soft query coverage preference (default 90; set to 0 to disable).
+
 ## 1.1.1 — Output polish, Parquet export, and runinfo fix
 
 - Raw BLAST export: removed the redundant `Sequence ID` column.
