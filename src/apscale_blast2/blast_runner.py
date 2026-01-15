@@ -67,7 +67,7 @@ class RunOptions:
     max_target_seqs: int = 30
     masking: bool = True
     min_qcov: float = 50.0
-    prefer_qcov: float = 90.0  # soft query coverage filter (applied only if it leaves at least one hit)
+    prefer_qcov: float = 75.0  # soft query coverage filter (applied only if it leaves at least one hit)
     max_evalue: float = 1e-3
     min_pident: float = 50.0
     blastn_exe: str = "blastn"

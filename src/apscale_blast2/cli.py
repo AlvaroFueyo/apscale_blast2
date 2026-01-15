@@ -217,7 +217,7 @@ def build_parser():
         "--prefer-query-coverage",
         dest="prefer_qcov",
         type=float,
-        default=90.0,
+        default=75.0,
         help=(
             "Soft preferred query coverage (percent). If at least one hit for a query has coverage >= this value, "
             "only those hits are considered; otherwise all hits are kept. Set to 0 to disable."
@@ -403,7 +403,7 @@ def main(argv=None):
     a.subset_size     = validate_range("--subset-size", float(a.subset_size), 1, 10000, integer=True)
     a.max_target_seqs = validate_range("--max-target-seqs", float(a.max_target_seqs), 1, 1000, integer=True)
     a.min_qcov        = validate_range("--min-qcov", float(a.min_qcov), 0.0, 100.0)
-    a.prefer_qcov     = validate_range("--prefer-qcov", float(getattr(a, "prefer_qcov", 90.0)), 0.0, 100.0)
+    a.prefer_qcov     = validate_range("--prefer-qcov", float(getattr(a, "prefer_qcov", 75.0)), 0.0, 100.0)
     a.max_evalue      = validate_range("--max-evalue", float(a.max_evalue), 1e-300, 1.0)
     a.min_pident      = validate_range("--min-pident", float(a.min_pident), 0.0, 100.0)
 

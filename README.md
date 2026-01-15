@@ -91,7 +91,7 @@ Temporary subset FASTA files are created under a run directory and removed by de
   - `-evalue` (defaults to `1e-3`)
   - `-qcov_hsp_perc` (defaults to `50`)
 - Additional **soft** query-coverage preference is applied in Python:
-  - if any hit has `qcov >= 90%`, only those hits are considered
+  - if any hit has `qcov >= 75%`, only those hits are considered
   - otherwise, the tool falls back to all hits (to avoid losing assignments)
 
 ## Reproducibility metadata (sidecar)

@@ -2,17 +2,20 @@
 
 ## Unreleased
 
-- Fixed legacy `--flag-scheme apscale` so it disables *both* query coverage filters (`min_query_coverage` and `prefer_query_coverage`).
-- Added `--prefer-qcov/--prefer-query-coverage` to control the soft query coverage preference (default 90; set to 0 to disable).
+## 1.1.2 — Soft query-coverage preference update
+
+- Lowered the default soft preferred query coverage (`prefer_query_coverage`, `--prefer-qcov`) from **90** to **75**.
+- Fixed legacy `--flag-scheme apscale` so it disables *both* query-coverage filters (`min_query_coverage` and `prefer_query_coverage`).
+- Added `--prefer-qcov/--prefer-query-coverage` to control the soft query coverage preference (set to `0` to disable).
 
 ## 1.1.1 — Output polish, Parquet export, and runinfo fix
 
 - Raw BLAST export: removed the redundant `Sequence ID` column.
-- Raw BLAST export: `Accession` is now normalised (taxonomy suffixes such as `###...` are stripped; coordinate-like suffixes are reduced to `ACCESSION.VERSION` when possible).
+- Raw BLAST export: `Accession` is now normalised (taxonomy suffixes are reduced to `ACCESSION.VERSION` when possible).
 - Added `--output-format {excel,parquet}` to write outputs as `.xlsx` (default) or compressed Parquet (`.parquet.snappy`).
 - Fixed `runinfo` sidecar generation and ensured it is written to the `taxonomy/` output folder.
 - Best-effort numeric dtype coercion for exported tables (keeps strings as strings, and metrics as int/float when possible).
-- Fixed `Ambiguous taxa` formatting in `apscale2`: avoids duplicated genus in binomials (e.g., `Cyprinus carpio` instead of `Cyprinus Cyprinus carpio`) and filters rank placeholders like `genus`.
+- Fixed `Ambiguous taxa` formatting in `apscale2`: avoids duplicate genus (e.g., `Cyprinus Cyprinus carpio`) and filters rank placeholders like `genus`.
 
 ## 1.1.0 — New flag scheme (apscale2), legacy compatibility, and reproducibility
 
@@ -29,7 +32,7 @@
 
 - Fixed `-h/--help` crash caused by unescaped percent signs in argparse help strings.
 - Improved CLI help formatting with grouped options, examples, and a standard `-V/--version` flag.
-- Improved Readme
+- Improved README.
 
 ## 1.0.0 — First public release
 
