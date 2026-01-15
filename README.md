@@ -33,14 +33,28 @@ Camacho, C., Coulouris, G., Avagyan, V., Ma, N., Papadopoulos, J., Bealer, K., &
 
 ## Installation
 
-From the repository root:
+You can install directly from the repository:
 
 ```bash
+pip install "git+https://github.com/AlvaroFueyo/apscale_blast2.git"
+```
+
+If you are developing or modifying the code, a local editable install is more convenient:
+
+```bash
+git clone https://github.com/AlvaroFueyo/apscale_blast2.git
+cd apscale_blast2
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\Activate.ps1
+
+# Linux/macOS:
+source venv/bin/activate
+# Windows PowerShell:
+venv\Scripts\Activate.ps1
+
 pip install -U pip
 pip install -e .
 ```
+
 
 ## Quick start (wizard mode)
 
