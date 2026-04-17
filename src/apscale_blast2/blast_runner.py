@@ -456,7 +456,7 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
             order = clean_taxon_name(ranks[3])
             family = clean_taxon_name(ranks[4])
             genus = clean_genus(ranks[5])
-            species = clean_species(ranks[6])
+            species = clean_species(ranks[6], genus=genus)
         else:
             kingdom = phylum = klass = order = family = genus = species = ""
         subject_id = key or r["sseqid"]

@@ -78,7 +78,10 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     for c in CANON_RANKS:
         out[c] = out[c].map(_clean_rank)
     out["genus_name"] = out["genus_name"].map(clean_genus)
-    out["species_name"] = out.apply(lambda r: clean_species(r.get("species_name","")) or "", axis=1)
+    out["species_name"] = out.apply(
+        lambda r: clean_species(r.get("species_name", ""), genus=r.get("genus_name", "")) or "",
+        axis=1,
+    )
     return out
 
 @lru_cache(maxsize=32)

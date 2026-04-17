@@ -7,10 +7,13 @@ from __future__ import annotations
 import re
 
 RE_CANDIDATUS = re.compile(r"^\s*(?:candidatus)\s+", re.I)
-RE_QUAL = re.compile(r"(?:sp|spp|cf|aff|nr|complex|group|uncultured|unverified|environmental|metagenome|metagenomic|bacterium|archaeon|eukaryote)\.?,?", re.I)
+RE_QUAL = re.compile(
+    r"\b(?:sp|spp|cf|aff|nr|complex|group|uncultured|unverified|environmental|metagenome|metagenomic|bacterium|archaeon|eukaryote)\b\.?,?",
+    re.I,
+)
 RE_MULTI = re.compile(r"[,/;]+")
 RE_GENUS = re.compile(r"^[A-Z][a-zA-Z-]+$")
-RE_BINOMIAL = re.compile(r"^\s*([A-Z][a-zA-Z-]+)\s+([a-z][a-zA-Z-]+)")
+RE_BINOMIAL = re.compile(r"^\s*([A-Z][a-zA-Z-]+)\s+([a-z][a-zA-Z-]+)\b")
 RE_PREFIX = re.compile(r"^(?:kingdom|superkingdom|phylum|class|order|family|genus|species)\s+", re.I)
 
 _PLACEHOLDER_VALUES = {
@@ -22,8 +25,9 @@ _PLACEHOLDER_VALUES = {
     "kingdom", "phylum", "class", "order", "family", "genus", "species",
 }
 
+
 def clean_taxon_name(v: str) -> str:
-    """Generic cleaner for higher-rank taxonomy labels."""
+    """Generic cleaner for taxonomy labels."""
     if not isinstance(v, str):
         return ""
     s = v.strip()
@@ -48,21 +52,39 @@ def clean_genus(g: str) -> str:
     return g if RE_GENUS.match(g) else ""
 
 
-def clean_species(s: str) -> str:
+def clean_species(s: str, genus: str = "") -> str:
+    """Return a clean binomial species name or ''.
+
+    If `s` contains only an epithet and `genus` is available, reconstruct
+    the binomial as 'Genus epithet'.
+    """
     if not isinstance(s, str):
         return ""
+
     s = clean_taxon_name(s)
     if not s:
         return ""
+
     if RE_MULTI.search(s):
         return ""
+
     s = RE_QUAL.sub("", s).strip()
+    if not s:
+        return ""
+
+    if " " not in s and genus:
+        genus = clean_genus(genus)
+        if genus:
+            s = f"{genus} {s}"
+
     m = RE_BINOMIAL.match(s)
     if not m:
         return ""
-    genus, epithet = m.group(1), m.group(2)
-    if not RE_GENUS.match(genus):
+
+    genus2, epithet = m.group(1), m.group(2)
+    if not RE_GENUS.match(genus2):
         return ""
     if RE_QUAL.fullmatch(epithet):
         return ""
-    return f"{genus} {epithet}"
+
+    return f"{genus2} {epithet}"

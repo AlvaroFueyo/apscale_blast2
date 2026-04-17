@@ -87,6 +87,26 @@ def _resolve_input_file(input_path: str, workdir: str) -> str:
     return p
 
 
+def _midori_token_to_name(t: str) -> str:
+    parts = [p for p in str(t).split("_") if p]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+
+    # If the last token is a taxid, drop it.
+    if parts[-1].isdigit():
+        parts = parts[:-1]
+
+    if not parts:
+        return ""
+
+    # Higher ranks often stay in one token; species commonly need the first two.
+    if len(parts) == 1:
+        return parts[0]
+    return " ".join(parts[:2])
+
+
 def _iter_fasta_headers(path: str):
     opener = gzip.open if _is_gz(path) else open
     mode = "rt" if _is_gz(path) else "r"
@@ -117,11 +137,7 @@ def midori2_taxonomy_table(fasta_path: str) -> pd.DataFrame:
 
         taxonomy = []
         for t in tax_parts:
-            record_split = t.split('_')
-            if len(record_split) == 2:
-                taxonomy.append(record_split[0])
-            else:
-                taxonomy.append(' '.join(record_split[:2]))
+            taxonomy.append(_midori_token_to_name(t))
 
         # Ensure exactly 7 ranks (superkingdom..species)
         taxonomy = (taxonomy + [''] * 7)[:7]

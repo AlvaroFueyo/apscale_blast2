@@ -74,7 +74,7 @@ You will be prompted to:
 The wizard asks once for the **BLAST search mode**:
 - Search mode: `megablast` (default; faster; good for similar amplicons/barcodes) or `blastn` (more sensitive; slower)
 
-The wizard always uses the `apscale2` flagging scheme. The legacy `apscale` scheme remains available from the CLI via `--flag-scheme apscale`, but is intentionally hidden from the wizard.
+The wizard uses the `apscale2` flagging scheme by default. The legacy `apscale` scheme remains available from the CLI via `--flag-scheme apscale`.
 
 ## CLI usage (non-interactive)
 
@@ -120,16 +120,13 @@ apscale_blast2 supports **two flagging/assignment schemes**, selectable via `--f
 
 ### `--flag-scheme apscale2` (default)
 
-Designed for **curated local databases**. The new flag system removes the old **dominance criterion** because apscale_blast2 is intended to work with curated local databases only; when the reference set is already curated and commonly de-duplicated, a “dominant taxon” heuristic loses much of its meaning.
+Designed for **curated local databases** (including de-duplicated references). The old dominance criterion was removed because apscale_blast2 works with local curated databases, usually already taxonomically deduplicated, where redundancy-driven “dominant taxon” heuristics lose much of their meaning.
 
 After applying identity/coverage thresholds and de-duplicating hits by taxon, the tool checks how many *unique taxa* remain and trims the final assignment to the **MRCA** (most recent common ancestor) when needed:
 
-- **No flag:** only one trimmed taxon remains.
-- **Fl1 — Two species of one genus:** if exactly two species remain within the same genus, the result is reported as `Genus epithet1/epithet2`, and the candidate species are stored under `Ambiguous taxa`.
-- **Fl1 — More than two species of one genus:** if more than two species remain within the same genus, the result is reported as `Genus sp.`, and the candidate species are stored under `Ambiguous taxa`.
-- **Fl2/Fl3/… — Two or more genera/families/... (trimming to MRCA):** when multiple genera (or higher ranks) remain, the assignment is trimmed to the MRCA rank and all surviving candidates are stored under `Ambiguous taxa`.
-
-Placeholder or low-information labels such as `unclassified`, `unknown`, and similar terms are removed before ambiguity handling, so they do not inflate the MRCA or the ambiguous-taxa list.
+- **No flag:** only one unique trimmed taxon remains.
+- **Fl1 — Two species of one genus / More than two species of one genus:** when all surviving taxa belong to the same genus, the final assignment keeps the genus and reports either `Genus epithet1/epithet2` (exactly two species) or `Genus sp.` (more than two species). The surviving taxa are listed under `Ambiguous taxa`.
+- **Fl2/Fl3/… — Two or more genera/families/... (trimming to MRCA):** when multiple genera (or higher ranks) remain, the assignment is trimmed to the MRCA rank and all remaining candidates are stored under `Ambiguous taxa`.
 
 If some hits are missing ranks (e.g. genus/species is empty), those missing values are ignored **when other hits provide a resolved value**, so you do not get false ambiguity just because one record is incompletely annotated.
 

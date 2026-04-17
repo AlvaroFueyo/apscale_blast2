@@ -1,9 +1,13 @@
 # Changelog
 
-## 1.2.0 — Refined apscale2 flags for curated local databases
+## 1.2.1 — Species restoration, MIDORI handling, and documentation cleanup
 
-- Updated Flag `Fl1` to summarise same-genus species conflicts without a dominance criterion: two species are reported as `Genus epithet1/epithet2`, while larger same-genus conflicts are reported as `Genus sp.`.
-- Added broader cleanup of low-information taxonomy labels such as `unclassified` and `unknown` before ambiguity handling.
+- Fixed a taxonomy cleaning bug that could silently erase valid species assignments.
+- `clean_species()` now correctly recognises binomials and can reconstruct `Genus + epithet` when only the species epithet is available but the genus is known.
+- Updated taxonomy loading and hit mapping so species cleaning uses the corresponding genus when available.
+- Improved MIDORI2 taxonomy parsing to handle underscore-separated tokens more robustly for future database builds.
+- Kept the `apscale2` workflow as the public default and documented why the dominance criterion was removed for curated, usually deduplicated local databases.
+- README cleaned up to match the public CLI/wizard behaviour and restored the installation section.
 
 ## 1.1.2 — Soft query-coverage preference update
 
@@ -48,4 +52,3 @@
   - Soft in-Python preference for >=90% (fallback to all hits if none pass)
 - BLAST+ >= 2.17.0 requirement enforced at startup.
 - In-memory taxonomy cache reused across multiple FASTA runs within one execution.
-
