@@ -12,7 +12,7 @@ try:
     import pyarrow.parquet as pq
 except Exception:
     pq = None
-from .taxonomy_clean import clean_genus, clean_species
+from .taxonomy_clean import clean_genus, clean_species, clean_taxon_name
 
 CANON_RANKS = ["kingdom_name","phylum_name","class_name","order_name","family_name","genus_name","species_name"]
 RANK_SYNONYMS = {
@@ -28,10 +28,11 @@ ID_CANDS = ["Sequence ID","sequence_id","seqid","id","header","Accession","acces
 _PREFIX_RE = re.compile(r'^(kingdom|superkingdom|phylum|class|order|family|genus|species)\s+', re.I)
 
 def _clean_rank(val: str) -> str:
-    if not isinstance(val, str): return "" if pd.isna(val) else str(val)
+    if not isinstance(val, str):
+        return "" if pd.isna(val) else str(val)
     v = val.strip()
     v = _PREFIX_RE.sub("", v)
-    return v
+    return clean_taxon_name(v)
 
 def _candidate_dirs(db_prefix: str):
     paths = []
