@@ -16,7 +16,7 @@ curated reference databases and obtain both **raw BLAST hits** and **taxonomy-aw
 | Database reuse within run | No | Yes (taxonomy cached in memory) |
 | Database handling | External, precompiled databases | Integrated database build and install |
 | Assignment ranking | Similarity-first (mode 1) | Same (mode 1 replicated) |
-| Taxonomic flags | F1–F4 | 2 New Flag Schemes (see below) |
+| Taxonomic flags | F1–F4 | F1-F5 New logic (see below) |
 | Query coverage handling | No | BLAST-level hard filter + soft post-filter |
 | BLAST version requirement | Flexible | BLAST+ ≥ 2.17 required |
 | Database location| User-defined path required for each run | Stored in local user data directory and auto-discovered |
@@ -55,7 +55,6 @@ pip install -U pip
 pip install -e .
 ```
 
-
 ## Quick start (wizard mode)
 
 Run:
@@ -72,11 +71,10 @@ You will be prompted to:
    - Select an existing installed database, or
    - **Skip** the FASTA.
 
-The wizard asks once for the **BLAST search mode** and the **flagging / assignment mode**:
+The wizard asks once for the **BLAST search mode**:
 - Search mode: `megablast` (default; faster; good for similar amplicons/barcodes) or `blastn` (more sensitive; slower)
-- Flag mode: `apscale2` (strict MRCA) or `iterative` (best unique taxon if it is separated by >1% similarity; otherwise MRCA)
 
-The legacy `apscale` scheme remains available from the CLI via `--flag-scheme apscale`, but is intentionally hidden from the wizard.
+The wizard always uses the `apscale2` flagging scheme. The legacy `apscale` scheme remains available from the CLI via `--flag-scheme apscale`, but is intentionally hidden from the wizard.
 
 ## CLI usage (non-interactive)
 
@@ -118,28 +116,22 @@ while still making results reproducible.
 
 ## Ambiguity flags
 
-apscale_blast2 supports **three flagging/assignment schemes**, selectable via `--flag-scheme`.
+apscale_blast2 supports **two flagging/assignment schemes**, selectable via `--flag-scheme`.
 
 ### `--flag-scheme apscale2` (default)
 
-This approach prioritises reducing false positives and maximising manual review and correction of assignments after they have been submitted.
+Designed for **curated local databases**. The new flag system removes the old **dominance criterion** because apscale_blast2 is intended to work with curated local databases only; when the reference set is already curated and commonly de-duplicated, a “dominant taxon” heuristic loses much of its meaning.
 
 After applying identity/coverage thresholds and de-duplicating hits by taxon, the tool checks how many *unique taxa* remain and trims the final assignment to the **MRCA** (most recent common ancestor) when needed:
 
-- **No flag:** only one species remains.
-- **Fl1 — Two or more species (trimming to MRCA):** multiple species remain but they collapse to a single genus → final assignment is trimmed to the genus MRCA and the candidate species are stored under `Ambiguous taxa`.
-- **Fl2/Fl3/… — Two or more genera/families/... (trimming to MRCA):** when multiple genera (or higher ranks) remain, the assignment is trimmed to the MRCA rank and all remaining candidates are stored under `Ambiguous taxa`.
+- **No flag:** only one trimmed taxon remains.
+- **Fl1 — Two species of one genus:** if exactly two species remain within the same genus, the result is reported as `Genus epithet1/epithet2`, and the candidate species are stored under `Ambiguous taxa`.
+- **Fl1 — More than two species of one genus:** if more than two species remain within the same genus, the result is reported as `Genus sp.`, and the candidate species are stored under `Ambiguous taxa`.
+- **Fl2/Fl3/… — Two or more genera/families/... (trimming to MRCA):** when multiple genera (or higher ranks) remain, the assignment is trimmed to the MRCA rank and all surviving candidates are stored under `Ambiguous taxa`.
+
+Placeholder or low-information labels such as `unclassified`, `unknown`, and similar terms are removed before ambiguity handling, so they do not inflate the MRCA or the ambiguous-taxa list.
 
 If some hits are missing ranks (e.g. genus/species is empty), those missing values are ignored **when other hits provide a resolved value**, so you do not get false ambiguity just because one record is incompletely annotated.
-
-### `--flag-scheme iterative`
-
-After filtering and similarity-based trimming, the tool de-duplicates the surviving hits by **trimmed taxonomy** and keeps the best representative row for each unique taxon. If more than one taxon remains:
-
-- **I1 — Best taxon by >1% gap:** if the top unique taxon is separated from the second-best unique taxon by **more than 1 percentage point of similarity**, that best taxon is kept.
-- **I2 — MRCA within 1%:** if the top two unique taxa differ by **1.0 or less**, the final assignment is trimmed to the **MRCA** and the surviving taxa are listed under `Ambiguous taxa`.
-
-This mode is deterministic and still conservative, but avoids collapsing every close conflict directly to the MRCA.
 
 ### `--flag-scheme apscale` (legacy)
 

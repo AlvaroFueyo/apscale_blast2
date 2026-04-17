@@ -1,11 +1,9 @@
 # Changelog
 
-## 1.2.0 - New Flag Iterative Flag Scheme
+## 1.2.0 — Refined apscale2 flags for curated local databases
 
-- Added a new `iterative` flag scheme: after similarity trimming and taxonomic de-duplication, keep the best unique taxon when it is separated from the second-best taxon by more than 1 percentage point of similarity (`I1`); otherwise trim to the MRCA (`I2`).
-- Decoupled BLAST search mode (`megablast` / `blastn`) from the flag scheme.
-- Updated the interactive wizard to prompt for the flag scheme (`apscale2` or `iterative`), while keeping legacy `apscale` available only from the CLI.
-- Conflict detection now de-duplicates by trimmed taxonomy before deciding whether ambiguity remains.
+- Updated Flag `Fl1` to summarise same-genus species conflicts without a dominance criterion: two species are reported as `Genus epithet1/epithet2`, while larger same-genus conflicts are reported as `Genus sp.`.
+- Added broader cleanup of low-information taxonomy labels such as `unclassified` and `unknown` before ambiguity handling.
 
 ## 1.1.2 — Soft query-coverage preference update
 
