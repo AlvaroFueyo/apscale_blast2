@@ -192,12 +192,12 @@ def build_parser():
     g_flags = p.add_argument_group("flags")
     g_flags.add_argument(
         "--flag-scheme",
-        choices=["apscale2", "apscale"],
+        choices=["apscale2", "iterative", "apscale"],
         default="apscale2",
         help=(
             "Which flagging/assignment scheme to use. "
-            "'apscale2' is the new MRCA-based scheme (default). "
-            "'apscale' replicates the original apscale_blast behaviour (legacy)."
+            "'apscale2' is the strict MRCA-based scheme (default). "
+            "'iterative' keeps the best unique taxon when it is separated by >1%% similarity; otherwise it trims to the MRCA. 'apscale' replicates the original apscale_blast behaviour (legacy CLI mode)."
         ),
     )
     g_blast.add_argument("--no-masking", action="store_true", help="Disable DUST/soft masking (default: enabled).")
@@ -317,6 +317,23 @@ def prompt_task_choice(default: str = "megablast") -> str:
             s = d
         if s in {"1","2"}:
             return "megablast" if s == "1" else "blastn"
+        print("Invalid input.")
+
+
+def prompt_flag_scheme_choice(default: str = "apscale2", include_legacy: bool = False) -> str:
+    print("\nFlagging / assignment mode:")
+    opts = [("apscale2", "strict MRCA (more conservative)"), ("iterative", "iterative gap rule (best taxon if >1%; otherwise MRCA)")]
+    if include_legacy:
+        opts.append(("apscale", "legacy APSCALE compatibility"))
+    for i, (_, label) in enumerate(opts, start=1):
+        print(f"  [{i}] {label}")
+    default_idx = next((i for i, (key, _) in enumerate(opts, start=1) if key == default), 1)
+    while True:
+        s = input(f"Choose mode (ENTER={default_idx}): ").strip()
+        if s == "":
+            s = str(default_idx)
+        if s.isdigit() and 1 <= int(s) <= len(opts):
+            return opts[int(s) - 1][0]
         print("Invalid input.")
 
 
@@ -452,8 +469,12 @@ def main(argv=None):
         else:
             print(f"\nDetected {len(fastas)} FASTA(s) and {len(dbs)} candidate database(s).", flush=True)
 
-        # Search-mode selection (interactive mode only)
+        # Search-mode and flag-scheme selection (interactive mode only)
         a.task = prompt_task_choice(default=a.task)
+        if getattr(a, "flag_scheme", "apscale2") == "apscale":
+            print("\nUsing legacy APSCALE flag mode from CLI (--flag-scheme apscale).", flush=True)
+        else:
+            a.flag_scheme = prompt_flag_scheme_choice(default=getattr(a, "flag_scheme", "apscale2"), include_legacy=False)
 
         last: int | None = None
         for fa in fastas:

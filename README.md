@@ -72,9 +72,11 @@ You will be prompted to:
    - Select an existing installed database, or
    - **Skip** the FASTA.
 
-The wizard asks once for the BLAST search mode:
-- `megablast` (default; faster; good for similar amplicons/barcodes)
-- `blastn` (more sensitive; slower)
+The wizard asks once for the **BLAST search mode** and the **flagging / assignment mode**:
+- Search mode: `megablast` (default; faster; good for similar amplicons/barcodes) or `blastn` (more sensitive; slower)
+- Flag mode: `apscale2` (strict MRCA) or `iterative` (best unique taxon if it is separated by >1% similarity; otherwise MRCA)
+
+The legacy `apscale` scheme remains available from the CLI via `--flag-scheme apscale`, but is intentionally hidden from the wizard.
 
 ## CLI usage (non-interactive)
 
@@ -116,7 +118,7 @@ while still making results reproducible.
 
 ## Ambiguity flags
 
-apscale_blast2 supports **two flagging/assignment schemes**, selectable via `--flag-scheme`.
+apscale_blast2 supports **three flagging/assignment schemes**, selectable via `--flag-scheme`.
 
 ### `--flag-scheme apscale2` (default)
 
@@ -129,6 +131,17 @@ After applying identity/coverage thresholds and de-duplicating hits by taxon, th
 - **Fl2/Fl3/… — Two or more genera/families/... (trimming to MRCA):** when multiple genera (or higher ranks) remain, the assignment is trimmed to the MRCA rank and all remaining candidates are stored under `Ambiguous taxa`.
 
 If some hits are missing ranks (e.g. genus/species is empty), those missing values are ignored **when other hits provide a resolved value**, so you do not get false ambiguity just because one record is incompletely annotated.
+
+### `--flag-scheme iterative`
+
+Designed as a middle ground between the strict MRCA scheme and fully manual curation.
+
+After filtering and similarity-based trimming, the tool de-duplicates the surviving hits by **trimmed taxonomy** and keeps the best representative row for each unique taxon. If more than one taxon remains:
+
+- **I1 — Best taxon by >1% gap:** if the top unique taxon is separated from the second-best unique taxon by **more than 1 percentage point of similarity**, that best taxon is kept.
+- **I2 — MRCA within 1%:** if the top two unique taxa differ by **1.0 or less**, the final assignment is trimmed to the **MRCA** and the surviving taxa are listed under `Ambiguous taxa`.
+
+This mode is deterministic and still conservative, but avoids collapsing every close conflict directly to the MRCA.
 
 ### `--flag-scheme apscale` (legacy)
 

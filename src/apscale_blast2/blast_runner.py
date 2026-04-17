@@ -25,6 +25,20 @@ from .filtering import thresholds_to_dict, trim_by_similarity, choose_flag_rest
 from .taxonomy_clean import clean_species, clean_genus
 from . import __version__
 
+TAX_COLS = ["Kingdom","Phylum","Class","Order","Family","Genus","Species"]
+RANKS_HIGH_TO_LOW = TAX_COLS
+RANKS_LOW_TO_HIGH = list(reversed(RANKS_HIGH_TO_LOW))
+TAX_PLACEHOLDERS = {"kingdom", "phylum", "class", "order", "family", "genus", "species"}
+RANK_PLURALS = {
+    "Species": "species",
+    "Genus": "genera",
+    "Family": "families",
+    "Order": "orders",
+    "Class": "classes",
+    "Phylum": "phyla",
+    "Kingdom": "kingdoms",
+}
+
 # Raw BLAST columns (tabular outfmt 6). Keep this stable unless you bump a major version.
 # - sseqid / sacc for easy trace-back to local DB / GenBank
 # - mismatch / gapopen for extra QC without bloating exports too much
@@ -249,6 +263,148 @@ def _write_table(df: pd.DataFrame, *, path: str, fmt: str, sheet_name: str | Non
     with pd.ExcelWriter(path) as xw:
         df.to_excel(xw, index=False, sheet_name=(sheet_name or "Sheet1"))
 
+def _clean_tax_value(v: object) -> str:
+    """Normalise taxonomy cell values and drop rank placeholders."""
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if not s:
+        return ""
+    if s.lower() in TAX_PLACEHOLDERS:
+        return ""
+    return s
+
+
+def _dedup_taxa_keep_best(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep the best representative row per trimmed taxonomy profile."""
+    if df.empty:
+        return df.copy()
+    out = df.copy()
+    out["_evalue_num"] = pd.to_numeric(out.get("evalue"), errors="coerce")
+    out["_sim_num"] = pd.to_numeric(out.get("Similarity"), errors="coerce")
+    out["_qcov_num"] = pd.to_numeric(out.get("query_coverage"), errors="coerce")
+    out = (
+        out.sort_values(["_sim_num", "_evalue_num", "_qcov_num"], ascending=[False, True, False])
+           .drop_duplicates(subset=TAX_COLS, keep="first")
+           .drop(columns=["_evalue_num", "_sim_num", "_qcov_num"], errors="ignore")
+           .reset_index(drop=True)
+    )
+    return out
+
+
+def _best_row_by_metrics(df: pd.DataFrame) -> dict[str, object]:
+    if df.empty:
+        return {}
+    out = df.copy()
+    out["_evalue_num"] = pd.to_numeric(out.get("evalue"), errors="coerce")
+    out["_sim_num"] = pd.to_numeric(out.get("Similarity"), errors="coerce")
+    out["_qcov_num"] = pd.to_numeric(out.get("query_coverage"), errors="coerce")
+    out = out.sort_values(["_sim_num", "_evalue_num", "_qcov_num"], ascending=[False, True, False])
+    out = out.drop(columns=["_evalue_num", "_sim_num", "_qcov_num"], errors="ignore")
+    return out.iloc[0].to_dict()
+
+
+def _uniq_nonempty(df: pd.DataFrame, col: str) -> set[str]:
+    if col not in df.columns or df.empty:
+        return set()
+    vals = df[col].fillna("").astype(str).map(_clean_tax_value)
+    return {v for v in vals.tolist() if v}
+
+
+def _compute_mrca_rank(df: pd.DataFrame) -> str | None:
+    """Deepest rank shared by all surviving taxa, ignoring blanks where possible."""
+    mrca_rank = None
+    for rnk in RANKS_HIGH_TO_LOW:
+        vals = _uniq_nonempty(df, rnk)
+        if len(vals) == 1:
+            mrca_rank = rnk
+            continue
+        if len(vals) == 0:
+            break
+        break
+    return mrca_rank
+
+
+def _trim_row_to_mrca(row: dict[str, object], mrca_rank: str | None) -> None:
+    if mrca_rank is None:
+        for c in TAX_COLS:
+            row[c] = ""
+        return
+    mrca_idx = RANKS_HIGH_TO_LOW.index(mrca_rank)
+    for c in RANKS_HIGH_TO_LOW[mrca_idx + 1:]:
+        row[c] = ""
+
+
+def _build_ambiguous_taxa_labels(df: pd.DataFrame) -> list[str]:
+    """Return a readable list of the surviving ambiguous taxa."""
+    amb: list[str] = []
+    for _, rr in df.iterrows():
+        genus = _clean_tax_value(rr.get("Genus", ""))
+        species = _clean_tax_value(rr.get("Species", ""))
+        family = _clean_tax_value(rr.get("Family", ""))
+        order = _clean_tax_value(rr.get("Order", ""))
+        klass = _clean_tax_value(rr.get("Class", ""))
+        phylum = _clean_tax_value(rr.get("Phylum", ""))
+        kingdom = _clean_tax_value(rr.get("Kingdom", ""))
+
+        label = ""
+        if species:
+            if genus:
+                if species.lower().startswith((genus + " ").lower()):
+                    label = species
+                else:
+                    label = f"{genus} {species}".strip() if " " not in species else species
+            else:
+                label = species
+        elif genus:
+            label = genus
+        else:
+            label = family or order or klass or phylum or kingdom
+
+        if label and label.lower() not in TAX_PLACEHOLDERS:
+            amb.append(label)
+    return sorted(set(amb))
+
+
+def _apply_iterative_scheme(df_tax_best: pd.DataFrame, qid: str, gap_threshold: float = 1.0) -> dict[str, object]:
+    """Resolve conflicts using the iterative top-taxon-vs-MRCA rule."""
+    ordered = df_tax_best.copy()
+    ordered["_evalue_num"] = pd.to_numeric(ordered.get("evalue"), errors="coerce")
+    ordered["_sim_num"] = pd.to_numeric(ordered.get("Similarity"), errors="coerce")
+    ordered["_qcov_num"] = pd.to_numeric(ordered.get("query_coverage"), errors="coerce")
+    ordered = ordered.sort_values(["_sim_num", "_evalue_num", "_qcov_num"], ascending=[False, True, False])
+    ordered = ordered.drop(columns=["_evalue_num", "_sim_num", "_qcov_num"], errors="ignore").reset_index(drop=True)
+
+    top_row = ordered.iloc[0].to_dict()
+    amb = _build_ambiguous_taxa_labels(ordered)
+
+    if len(ordered) < 2:
+        top_row["Flag"] = ""
+        top_row["Ambiguous taxa"] = ""
+        top_row["unique ID"] = qid
+        return top_row
+
+    sim1 = pd.to_numeric(ordered.iloc[0].get("Similarity"), errors="coerce")
+    sim2 = pd.to_numeric(ordered.iloc[1].get("Similarity"), errors="coerce")
+    sim1 = 0.0 if pd.isna(sim1) else float(sim1)
+    sim2 = 0.0 if pd.isna(sim2) else float(sim2)
+    gap = sim1 - sim2
+
+    if gap > float(gap_threshold):
+        top_row["Flag"] = "I1 (Best taxon by >1% gap)"
+        top_row["Ambiguous taxa"] = ", ".join(amb)
+        top_row["unique ID"] = qid
+        return top_row
+
+    mrca_rank = _compute_mrca_rank(ordered)
+    out = top_row.copy()
+    _trim_row_to_mrca(out, mrca_rank)
+    out["Flag"] = "I2 (MRCA within 1%)"
+    out["Ambiguous taxa"] = ", ".join(amb)
+    out["unique ID"] = qid
+    return out
+
+
 def _prefilter_hits(raw: pd.DataFrame, min_qcov: float, max_evalue: float, min_pident: float) -> pd.DataFrame:
     df = raw.copy()
     for c in ["pident","evalue","qcovs","qcovhsp"]:
@@ -412,7 +568,6 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
 
     print("Applying flags and similarity trimming...", flush=True)
     thr = thresholds_to_dict(opts.thresholds)
-    TAX_COLS = ["Kingdom","Phylum","Class","Order","Family","Genus","Species"]
 
     out_rows: List[Dict[str,object]] = []
     sub_by_q = {qid: sub for qid, sub in hits.groupby("unique ID", sort=False)}
@@ -456,36 +611,36 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
             trim_by_similarity(row, float(max_sim_ref), thr)
             rows2_full.append({"unique ID": qid, **row})
 
-        # --- Ambiguity handling (F1–F4) ---
-        # This follows the APSCALE / apscale_blast logic:
-        # 1) Remove duplicate hits after similarity-threshold trimming.
-        #    If only one taxon remains, no ambiguity flag is set.
-        # 2) If the best similarity is below the species threshold, progressively drop lower
-        #    ranks until a single assignment remains (no flag).
-        # 3) Otherwise (species-level reference), apply the APSCALE ambiguity flags F1–F4.
+        # --- Ambiguity handling / assignment ---
+        # 1) Remove duplicate hits after similarity-threshold trimming *by taxonomy*.
+        #    Metric differences alone should not create artificial conflicts.
+        # 2) If only one trimmed taxonomy remains, no flag is set.
+        # 3) Otherwise, resolve according to the selected flag scheme.
 
         df2 = pd.DataFrame(rows2_full)
-        df3 = df2.drop_duplicates().copy()
+        df_tax_best = _dedup_taxa_keep_best(df2)
 
-        # 1) Only one taxon remains -> no ambiguity
-        if len(df3) == 1:
-            r = df3.iloc[0].to_dict()
+        # 1) Only one taxonomy remains -> no ambiguity
+        if len(df_tax_best) == 1:
+            r = df_tax_best.iloc[0].to_dict()
             r["Flag"] = ""
             r["Ambiguous taxa"] = ""
             r["unique ID"] = qid
             out_rows.append(r)
             continue
 
+        scheme = getattr(opts, "flag_scheme", "apscale2")
+
         # 2) Assignment & flags
-        if getattr(opts, "flag_scheme", "apscale2") == "apscale":
+        if scheme == "apscale":
             # ---- Legacy APSCALE-BLAST flags (dominant-species logic, etc.)
 
             # Below species threshold -> trim ranks until unique (no flag)
             if float(max_sim_ref) < float(thr["Species"]):
-                df_tmp = df3.copy()
+                df_tmp = df_tax_best.copy()
                 for level in ["Species", "Genus", "Family", "Order", "Class", "Phylum", "Kingdom"]:
                     df_tmp[level] = ""
-                    df_tmp = df_tmp.drop_duplicates()
+                    df_tmp = _dedup_taxa_keep_best(df_tmp)
                     if len(df_tmp) == 1:
                         break
                 r = df_tmp.iloc[0].to_dict()
@@ -497,111 +652,51 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
 
             # Species-level reference -> ambiguity flags
             df2c = df2.copy()
-            df2c["duplicate_count"] = df2c.groupby(df2c.columns.tolist(), dropna=False).transform("size")
+            df2c["duplicate_count"] = df2c.groupby(TAX_COLS, dropna=False)["Species"].transform("size")
             max_dup = int(df2c["duplicate_count"].max()) if not df2c.empty else 0
-            df_dom = df2c[df2c["duplicate_count"] == max_dup].drop_duplicates()
+            df_dom = df2c[df2c["duplicate_count"] == max_dup].drop_duplicates(subset=TAX_COLS)
 
             # F1: dominant species present
             if len(df_dom) == 1:
                 dom_row = df_dom.drop(columns=["duplicate_count"]).iloc[0].to_dict()
                 dom_row["Flag"] = "F1 (Dominant species)"
-                dom_row["Ambiguous taxa"] = ", ".join(sorted({s for s in df2["Species"].drop_duplicates().tolist() if s}))
+                dom_row["Ambiguous taxa"] = ", ".join(_build_ambiguous_taxa_labels(df_tax_best))
                 dom_row["unique ID"] = qid
                 out_rows.append(dom_row)
                 continue
 
-            rows3 = df3.to_dict(orient="records")
+            rows3 = df_tax_best.to_dict(orient="records")
             amb_species = sorted({s for s in df2["Species"].drop_duplicates().tolist() if s})
             chosen = choose_flag_rest(rows3, amb_species)
             chosen["unique ID"] = qid
             out_rows.append(chosen)
             continue
 
-        # ---- APSCALE-BLAST2 flags (MRCA-based, no dominance)
-        # Deduplicate by taxonomy before counting diversity (prevents false flags when equivalent records exist).
-        df2_best = df2.copy()
-        df2_best["_evalue_num"] = pd.to_numeric(df2_best.get("evalue"), errors="coerce")
-        df2_best["_sim_num"] = pd.to_numeric(df2_best.get("Similarity"), errors="coerce")
-        # Pick the best hit per unique taxonomy profile
-        df2_best = (
-            df2_best.sort_values(["_sim_num", "_evalue_num"], ascending=[False, True])
-                   .drop_duplicates(subset=TAX_COLS, keep="first")
-                   .drop(columns=["_evalue_num", "_sim_num"], errors="ignore")
-        )
+        if scheme == "iterative":
+            out_rows.append(_apply_iterative_scheme(df_tax_best, qid=qid, gap_threshold=1.0))
+            continue
 
-        # Some reference taxmaps occasionally contain rank placeholders (e.g. "genus")
-        # as literal values in taxonomy columns. Treat these as missing.
-        _placeholders = {"kingdom", "phylum", "class", "order", "family", "genus", "species"}
-
-        def _clean_tax(v: object) -> str:
-            """Normalise taxonomy cell values.
-
-            Drops blanks and rank placeholders such as 'genus' that may appear in
-            some reference taxmaps.
-            """
-            if v is None:
-                return ""
-            s = str(v).strip()
-            if not s:
-                return ""
-            if s.lower() in _placeholders:
-                return ""
-            return s
-
-        def _uniq_nonempty(col: str) -> set[str]:
-            if col not in df2_best.columns or df2_best.empty:
-                return set()
-            vals = df2_best[col].fillna("").astype(str).map(_clean_tax)
-            return {v for v in vals.tolist() if v}
-
-        ranks_high_to_low = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"]
-        ranks_low_to_high = list(reversed(ranks_high_to_low))
-        plural = {
-            "Species": "species",
-            "Genus": "genera",
-            "Family": "families",
-            "Order": "orders",
-            "Class": "classes",
-            "Phylum": "phyla",
-            "Kingdom": "kingdoms",
-        }
-
-        # Find deepest common rank (MRCA) across remaining taxa, ignoring blanks where possible.
-        mrca_rank = None
-        for rnk in ranks_high_to_low:
-            vals = _uniq_nonempty(rnk)
-            if len(vals) == 1:
-                mrca_rank = rnk
-                continue
-            # If there are 0 values, taxonomy is incomplete at this rank; stop here.
-            if len(vals) == 0:
-                break
-            # >1 unique values => stop; MRCA is previous (higher) rank.
-            break
+        # ---- APSCALE-BLAST2 strict flags (MRCA-based, no dominance)
+        mrca_rank = _compute_mrca_rank(df_tax_best)
 
         # Determine the diversity rank immediately below the MRCA (used for flag numbering/text).
         diversity_rank = None
         if mrca_rank is None:
             diversity_rank = "Kingdom"
         else:
-            idx = ranks_high_to_low.index(mrca_rank)
-            if idx < len(ranks_high_to_low) - 1:
-                diversity_rank = ranks_high_to_low[idx + 1]
+            idx = RANKS_HIGH_TO_LOW.index(mrca_rank)
+            if idx < len(RANKS_HIGH_TO_LOW) - 1:
+                diversity_rank = RANKS_HIGH_TO_LOW[idx + 1]
             else:
                 diversity_rank = None
 
         # If there is no diversity below MRCA (i.e., only one taxon remains), no flag.
         needs_flag = False
         if diversity_rank is not None:
-            vals = _uniq_nonempty(diversity_rank)
+            vals = _uniq_nonempty(df_tax_best, diversity_rank)
             needs_flag = len(vals) > 1
 
-        # Choose a representative/best row for metrics
-        best_row = df2_best.copy()
-        best_row["_evalue_num"] = pd.to_numeric(best_row.get("evalue"), errors="coerce")
-        best_row["_sim_num"] = pd.to_numeric(best_row.get("Similarity"), errors="coerce")
-        best_row = best_row.sort_values(["_sim_num", "_evalue_num"], ascending=[False, True]).drop(columns=["_evalue_num", "_sim_num"], errors="ignore")
-        out = best_row.iloc[0].to_dict()
+        out = _best_row_by_metrics(df_tax_best)
 
         if not needs_flag:
             out["Flag"] = ""
@@ -610,58 +705,11 @@ def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
             out_rows.append(out)
             continue
 
-        # Build flag + ambiguous taxa list.
-        #
-        # Even if we trim the final assignment up to the MRCA (e.g. to Family),
-        # it is useful for manual auditing to keep as much detail as possible
-        # about what the surviving hits actually were. Therefore, instead of
-        # listing only the values at `diversity_rank` (e.g. just genera), we
-        # report each ambiguous taxon at its most specific available rank
-        # (Species > Genus > Family > ...).
-        amb: list[str] = []
-        if diversity_rank:
-            for _, rr in df2_best.iterrows():
-                genus = _clean_tax(rr.get("Genus", ""))
-                species = _clean_tax(rr.get("Species", ""))
-                family = _clean_tax(rr.get("Family", ""))
-                order = _clean_tax(rr.get("Order", ""))
-                klass = _clean_tax(rr.get("Class", ""))
-                phylum = _clean_tax(rr.get("Phylum", ""))
-                kingdom = _clean_tax(rr.get("Kingdom", ""))
-
-                label = ""
-                if species:
-                    if genus:
-                        # Many taxmaps store Species as a full binomial ("Genus species").
-                        if species.lower().startswith((genus + " ").lower()):
-                            label = species
-                        else:
-                            # If Species is just the epithet, prefix the genus; otherwise keep as-is.
-                            label = f"{genus} {species}".strip() if " " not in species else species
-                    else:
-                        label = species
-                elif genus:
-                    label = genus
-                else:
-                    label = family or order or klass or phylum or kingdom
-
-                # Guard against placeholders slipping through (best-effort)
-                if label and label.lower() not in _placeholders:
-                    amb.append(label)
-            amb = sorted(set(amb))
-        flag_num = ranks_low_to_high.index(diversity_rank) + 1 if diversity_rank else 1
-        out["Flag"] = f"Fl{flag_num} Two or more {plural.get(diversity_rank, diversity_rank.lower() + 's')} (trimming to MRCA)"
+        amb = _build_ambiguous_taxa_labels(df_tax_best)
+        flag_num = RANKS_LOW_TO_HIGH.index(diversity_rank) + 1 if diversity_rank else 1
+        out["Flag"] = f"Fl{flag_num} Two or more {RANK_PLURALS.get(diversity_rank, diversity_rank.lower() + 's')} (trimming to MRCA)"
         out["Ambiguous taxa"] = ", ".join(amb)
-
-        # Trim taxonomy to MRCA (blank all ranks below MRCA). If MRCA unknown, blank everything.
-        if mrca_rank is None:
-            for c in TAX_COLS:
-                out[c] = ""
-        else:
-            mrca_idx = ranks_high_to_low.index(mrca_rank)
-            for c in ranks_high_to_low[mrca_idx + 1:]:
-                out[c] = ""
-
+        _trim_row_to_mrca(out, mrca_rank)
         out["unique ID"] = qid
         out_rows.append(out)
 

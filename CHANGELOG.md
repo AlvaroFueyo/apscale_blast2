@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 - New Flag Iterative Flag Scheme
+
+- Added a new `iterative` flag scheme: after similarity trimming and taxonomic de-duplication, keep the best unique taxon when it is separated from the second-best taxon by more than 1 percentage point of similarity (`I1`); otherwise trim to the MRCA (`I2`).
+- Decoupled BLAST search mode (`megablast` / `blastn`) from the flag scheme.
+- Updated the interactive wizard to prompt for the flag scheme (`apscale2` or `iterative`), while keeping legacy `apscale` available only from the CLI.
+- Conflict detection now de-duplicates by trimmed taxonomy before deciding whether ambiguity remains.
 
 ## 1.1.2 — Soft query-coverage preference update
 
