@@ -16,7 +16,7 @@ curated reference databases and obtain both **raw BLAST hits** and **taxonomy-aw
 | Database reuse within run | No | Yes (taxonomy cached in memory) |
 | Database handling | External, precompiled databases | Integrated database build and install |
 | Assignment ranking | Similarity-first (mode 1) | Same (mode 1 replicated) |
-| Taxonomic flags | F1–F4 | F1-F5 New logic (see below) |
+| Taxonomic flags | F1–F4 | 2 New Flag Schemes (see below) |
 | Query coverage handling | No | BLAST-level hard filter + soft post-filter |
 | BLAST version requirement | Flexible | BLAST+ ≥ 2.17 required |
 | Database location| User-defined path required for each run | Stored in local user data directory and auto-discovered |
@@ -122,7 +122,7 @@ apscale_blast2 supports **three flagging/assignment schemes**, selectable via `-
 
 ### `--flag-scheme apscale2` (default)
 
-Designed for **curated local databases** (including de-duplicated references) where “dominant taxon” heuristics are not very informative.
+This approach prioritises reducing false positives and maximising manual review and correction of assignments after they have been submitted.
 
 After applying identity/coverage thresholds and de-duplicating hits by taxon, the tool checks how many *unique taxa* remain and trims the final assignment to the **MRCA** (most recent common ancestor) when needed:
 
@@ -133,8 +133,6 @@ After applying identity/coverage thresholds and de-duplicating hits by taxon, th
 If some hits are missing ranks (e.g. genus/species is empty), those missing values are ignored **when other hits provide a resolved value**, so you do not get false ambiguity just because one record is incompletely annotated.
 
 ### `--flag-scheme iterative`
-
-Designed as a middle ground between the strict MRCA scheme and fully manual curation.
 
 After filtering and similarity-based trimming, the tool de-duplicates the surviving hits by **trimmed taxonomy** and keeps the best representative row for each unique taxon. If more than one taxon remains:
 
