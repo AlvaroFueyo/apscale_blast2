@@ -11,16 +11,17 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import textwrap
+import math
 from typing import Dict, List, Tuple
 
 from .blast_runner import run, RunOptions
 from .dbs import DatabaseSpec, validate_database
 from .db_defaults import get_thresholds_for_db, save_db_defaults
-from .io_utils import read_db_map
+from .io_utils import is_fasta, fasta_stem
+from .filtering import thresholds_to_dict
 from .db_home import get_db_home, db_folder_for_name, install_precompiled_db_zip
 from .db_build_midori2 import build_midori2_db
 from .db_build_trnl import build_trnl_db
@@ -34,8 +35,14 @@ from . import __version__
 FA_EXTS = (".fa", ".fasta", ".fna")
 
 def discover_fastas(fasta_dir: str) -> List[str]:
+    if os.path.isfile(fasta_dir):
+        if not is_fasta(fasta_dir):
+            raise ValueError(f"Not a FASTA input: {fasta_dir}")
+        return [os.path.abspath(fasta_dir)]
+    if not os.path.isdir(fasta_dir):
+        raise ValueError(f"FASTA directory does not exist: {fasta_dir}")
     return [os.path.join(fasta_dir, n) for n in sorted(os.listdir(fasta_dir))
-            if os.path.isfile(os.path.join(fasta_dir, n)) and n.lower().endswith(FA_EXTS) and not n.startswith("subset_")]
+            if os.path.isfile(os.path.join(fasta_dir, n)) and is_fasta(n) and not n.startswith("subset_")]
 
 def discover_dbs(db_dir: str) -> List[Tuple[str, str]]:
     """Discover usable databases under a directory.
@@ -85,6 +92,8 @@ def discover_dbs(db_dir: str) -> List[Tuple[str, str]]:
     return out
 
 def validate_range(name: str, val: float, lo: float, hi: float, integer=False):
+    if not math.isfinite(val) or (integer and val != int(val)):
+        raise ValueError(f"{name} must be a finite {'integer' if integer else 'number'}")
     if integer and abs(val - int(val)) < 1e-9:
         val = int(val)
     if val < lo or val > hi:
@@ -202,6 +211,7 @@ def build_parser():
     g_blast.add_argument("--no-masking", action="store_true", help="Disable DUST/soft masking (default: enabled).")
     g_blast.add_argument("--blastn-exe", default="blastn", help="Path/name of the blastn executable.")
     g_blast.add_argument("--makeblastdb-exe", default="makeblastdb", help="Path/name of the makeblastdb executable.")
+    g_blast.add_argument("--blastdbcmd-exe", default="blastdbcmd", help="Path/name of blastdbcmd, used to validate installed ZIP bundles.")
 
     # Filtering / trimming
     g_flt = p.add_argument_group("Filtering")
@@ -249,12 +259,14 @@ def build_parser():
     )
     g_flt.add_argument(
         "--thresholds",
-        default="97,95,90,87,85",
-        help="Comma-separated thresholds for species, genus, family, order, class (APSCALE defaults).",
+        default=None,
+        help="Species, genus, family, order, class thresholds. Explicit values override DB defaults; fallback: 97,95,90,87,85.",
     )
 
     # Output/debug
     g_out = p.add_argument_group("Output")
+    g_out.add_argument("--out-dir", help="Output root containing raw_blast/ and taxonomy/. Default: parent of FASTA directory.")
+    g_out.add_argument("--overwrite", action="store_true", help="Explicitly replace this input's existing output tables.")
     g_out.add_argument(
         "--output-format",
         choices=["excel", "parquet"],
@@ -325,7 +337,7 @@ def prompt_builder_choice() -> str:
         ("midori2", "MIDORI2 (FASTA/FASTA.GZ/ZIP)") ,
         ("trnl", "trnL (FASTA + taxonomy TXT/CSV/TSV/XLSX)") ,
         ("unite", "UNITE (FASTA/FASTA.GZ/ZIP)") ,
-        ("silva", "SILVA (FASTA; optional taxonomy table)") ,
+        ("silva", "SILVA (FASTA + rank map or taxonomy table)") ,
         ("pr2", "PR2 (FASTA/FASTA.GZ/ZIP)") ,
         ("diatbarcode", "DiatBarcode (XLSX release)") ,
         ("precompiled_zip", "Precompiled BLAST database bundle (.zip; indices + taxonomy)") ,
@@ -361,9 +373,22 @@ def _prompt_optional_name(prompt_text: str) -> str | None:
     s = input(prompt_text).strip()
     return s if s else None
 
-def main(argv=None):
+def _main(argv=None):
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments and arguments[0] == "build":
+        from .build_cli import main as build_main
+        return build_main(arguments[1:])
     p = build_parser()
     a = p.parse_args(argv)
+    noninteractive = bool(a.db_for_all or a.db_map)
+    if a.db_for_all and a.db_map:
+        p.error("--db-for-all and --db-map are mutually exclusive")
+    if noninteractive and not a.fastas:
+        p.error("--fastas is required in non-interactive mode")
+    thresholds_to_dict(a.thresholds)
 
     # Legacy APSCALE-BLAST mode: replicate the *behaviour* and the *defaults*
     # of the original apscale_blast implementation.
@@ -379,7 +404,7 @@ def main(argv=None):
     logger = logging.getLogger("apscale_blast2")
 
     # Resolve DB home early so utility flags can work without requiring BLAST.
-    db_home = get_db_home(a.db_home, ensure=True)
+    db_home = get_db_home(a.db_home, ensure=(not noninteractive or a.open_db_home))
 
     if getattr(a, "print_db_home", False):
         print(db_home)
@@ -420,6 +445,11 @@ def main(argv=None):
 
     fastas = discover_fastas(fasta_dir)
     if not fastas: raise SystemExit("No FASTA files were found.")
+    names = [os.path.normcase(fasta_stem(fa)) for fa in fastas]
+    if len(names) != len(set(names)):
+        p.error("FASTA names produce colliding output names; rename the inputs")
+    if os.path.isfile(fasta_dir):
+        fasta_dir = os.path.dirname(os.path.abspath(fasta_dir))
     dbs: List[Tuple[str,str]] = []
     for d in search_dirs:
         dbs.extend(discover_dbs(d))
@@ -490,11 +520,15 @@ def main(argv=None):
 
                 if recipe == "diatbarcode":
                     src = _prompt_file_path("Path to the DiatBarcode XLSX release: ")
+                    classification = input("Classification (ENTER=RCM, or Kociolek): ").strip() or "RCM"
+                    if classification not in {"RCM", "Kociolek"}:
+                        raise ValueError("Classification must be RCM or Kociolek")
                     nm = _prompt_optional_name("Short name for the database (ENTER=auto): ")
                     nm2 = nm or _auto_name(recipe, src)
                     out_dir = db_folder_for_name(db_home, nm2)
                     build_reqs[out_dir] = {"builder": recipe, "input": src, "name": nm2}
                     label = f"DiatBarcode:{os.path.basename(out_dir)}"
+                    build_reqs[out_dir]["classification"] = classification
                 elif recipe == "trnl":
                     src = _prompt_file_path("Path to the trnL FASTA file (.fasta/.fasta.gz/.zip): ")
                     tax = _prompt_file_path("Path to the trnL taxonomy file (TXT/CSV/TSV/XLSX): ")
@@ -505,15 +539,18 @@ def main(argv=None):
                     label = f"trnL:{os.path.basename(out_dir)}"
                 elif recipe == "silva":
                     src = _prompt_file_path("Path to the SILVA FASTA file (.fasta/.fasta.gz/.zip): ")
-                    tax = input("Optional path to a taxonomy table (ENTER=auto-parse from headers): ").strip().strip('"').strip("'")
-                    if tax and not os.path.exists(tax):
-                        print("Invalid path (does not exist). It will be ignored and headers will be parsed instead.")
-                        tax = ""
+                    tax = _prompt_file_path("Path to the SILVA tax_slv rank map or normalized accession/rank table: ")
+                    tax_kind = input("File type (ENTER=rank map, T=normalized table): ").strip().upper()
+                    if tax_kind not in {"", "T"}:
+                        raise ValueError("File type must be ENTER or T")
                     nm = _prompt_optional_name("Short name for the database (ENTER=auto): ")
                     nm2 = nm or _auto_name(recipe, src)
                     out_dir = db_folder_for_name(db_home, nm2)
                     build_reqs[out_dir] = {"builder": recipe, "input": src, "taxonomy": tax, "name": nm2}
                     label = f"SILVA:{os.path.basename(out_dir)}"
+                    build_reqs[out_dir]["rank_map"] = tax if not tax_kind else ""
+                    if not tax_kind:
+                        build_reqs[out_dir]["taxonomy"] = ""
                 elif recipe == "unite":
                     src = _prompt_file_path("Path to the UNITE FASTA file (.fasta/.fasta.gz/.zip): ")
                     nm = _prompt_optional_name("Short name for the database (ENTER=auto): ")
@@ -580,7 +617,7 @@ def main(argv=None):
         print(f"  - Source: {src}", flush=True)
         print("  - Format: Species,Genus,Family,Order,Class", flush=True)
         print(f"  - Current: {current}", flush=True)
-        new_val = input("  Enter new thresholds (or press ENTER to keep): ").strip()
+        new_val = "" if noninteractive else input("  Enter new thresholds (or press ENTER to keep): ").strip()
         if new_val:
             # Validate early (and keep prompting until valid)
             while True:
@@ -588,8 +625,8 @@ def main(argv=None):
                 ok = len(parts) == 5
                 if ok:
                     try:
-                        nums = [float(p) for p in parts]
-                        ok = all(0.0 <= x <= 100.0 for x in nums)
+                        thresholds_to_dict(new_val)
+                        ok = True
                     except Exception:
                         ok = False
                 if ok:
@@ -630,23 +667,23 @@ def main(argv=None):
             else:
                 print(f"  - Building {recipe.upper()}: {name}", flush=True)
             if recipe == "precompiled_zip":
-                built = install_precompiled_db_zip(zip_path=src, db_home=db_home, name=name)
+                built = install_precompiled_db_zip(zip_path=src, db_home=db_home, name=name, blastdbcmd_exe=a.blastdbcmd_exe)
             elif recipe == "trnl":
                 built = build_trnl_db(input_fasta=src, taxonomy_path=tax, db_home=db_home, name=name, makeblastdb_exe=a.makeblastdb_exe)
             elif recipe == "unite":
                 built = build_unite_db(input_path=src, db_home=db_home, name=name, makeblastdb_exe=a.makeblastdb_exe)
             elif recipe == "silva":
-                built = build_silva_db(input_path=src, taxonomy_path=(tax or None), db_home=db_home, name=name, makeblastdb_exe=a.makeblastdb_exe)
+                built = build_silva_db(input_path=src, taxonomy_path=(tax or None), rank_map_path=(info.get("rank_map") or None), db_home=db_home, name=name, makeblastdb_exe=a.makeblastdb_exe)
             elif recipe == "pr2":
                 built = build_pr2_db(input_path=src, db_home=db_home, name=name, makeblastdb_exe=a.makeblastdb_exe)
             elif recipe == "diatbarcode":
-                built = build_diatbarcode_db(xlsx_path=src, db_home=db_home, name=name, makeblastdb_exe=a.makeblastdb_exe)
+                built = build_diatbarcode_db(xlsx_path=src, db_home=db_home, name=name, classification=info.get("classification", "RCM"), makeblastdb_exe=a.makeblastdb_exe)
             else:
                 built = build_midori2_db(input_path=src, db_home=db_home, name=name, makeblastdb_exe=a.makeblastdb_exe)
+            save_db_defaults(built, thresholds_cache[out_dir])
             print(f"    OK → {built}", flush=True)
 
     # 2) Validate all selected databases
-    from .dbs import validate_database
     for _, dbp in selections:
         if dbp is None:
             continue
@@ -661,11 +698,8 @@ def main(argv=None):
         blastn_exe=a.blastn_exe, keep_tsv=bool(a.keep_tsv),
         log_level=a.log_level, inline_perc_identity=bool(a.inline_perc_identity),
         output_format=str(getattr(a, "output_format", "excel")),
+        output_dir=a.out_dir, overwrite=a.overwrite,
     )
-
-    tmp_root = os.path.join(fasta_dir, "_apscale_blast2_tmp")
-    if os.path.exists(tmp_root): shutil.rmtree(tmp_root, ignore_errors=True)
-    os.makedirs(tmp_root, exist_ok=True)
 
     for fa, dbp in selections:
         if dbp is None:
@@ -673,20 +707,23 @@ def main(argv=None):
             continue
         thresholds = thresholds_cache.get(dbp, a.thresholds)
         opts = RunOptions(**opts_base, thresholds=thresholds)
-        out_dir = os.path.join(tmp_root, os.path.splitext(os.path.basename(fa))[0])
-        os.makedirs(out_dir, exist_ok=True)
         dbspec = DatabaseSpec(path=dbp)
-        res = run(fa, out_dir, dbspec, opts)
+        res = run(fa, None, dbspec, opts)
         print(f"Done: {res.get('taxonomy_output')}", flush=True)
 
-    try:
-        if os.path.isdir(tmp_root) and not os.listdir(tmp_root):
-            os.rmdir(tmp_root)
-    except Exception:
-        pass
-
-    print("\nDone. Check the 'taxonomy/' folder in the parent directory of your FASTA files.", flush=True)
+    print("\nDone. Taxonomy output paths are listed above.", flush=True)
     return 0
+
+
+def main(argv=None):
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        raise SystemExit(130)
+    except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        logging.getLogger("apscale_blast2").debug("Execution failed", exc_info=True)
+        raise SystemExit(f"Error: {error}") from None
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -1,0 +1,50 @@
+[
+  {
+    "url": "https://entrepot.recherche.data.gouv.fr/api/access/datafile/761542",
+    "bytes": 5565436,
+    "sha256": "03e41bb66eceff487588a61630197350e62ad8ab547dd4eaa5e8ed89aa35e8a0",
+    "md5": "a20e850006a3fa5b3a40049c2e01f74e",
+    "upstream_checksum_verified": true
+  },
+  {
+    "url": "https://github.com/pr2database/pr2database/releases/download/v5.1.1/pr2_version_5.1.1_SSU_UTAX.fasta.gz",
+    "bytes": 58440002,
+    "sha256": "eaf1d35fc03ca83c65018203803a385f0a6297dffc625db5a56f888ec2ee3872",
+    "md5": "b9425fe06b3ea95b4abd2422375f86c5",
+    "upstream_checksum_verified": false
+  },
+  {
+    "url": "https://ftp.arb-silva.de/release_138_2/Exports/SILVA_138.2_SSURef_NR99_tax_silva_trunc.fasta.gz",
+    "bytes": 199304081,
+    "sha256": "2e597253f5a78a57b281f8e8365082b9d0f2dac6fa9beed0eb4868878fe2af50",
+    "md5": "4fec6131012e9ad4ff0cdcbbb7405379",
+    "upstream_checksum_verified": false
+  },
+  {
+    "url": "https://ftp.arb-silva.de/release_138_2/Exports/taxonomy/tax_slv_ssu_138.2.txt.gz",
+    "bytes": 210848,
+    "sha256": "847c794b0a3a5f4e66ca09682f349d28e96e44e5069a29bb4f358ae804169d42",
+    "md5": "489319c74615da2ab80a42d8f88fc72f",
+    "upstream_checksum_verified": false
+  },
+  {
+    "url": "https://ucla.box.com/index.php?rm=box_download_shared_file&shared_name=n4hbocub5pdoffdtcfv1tdjr7cl4cc1n&file_id=f_655151150424",
+    "bytes": 10368141,
+    "sha256": "37b68ccb16731407ed4414f76c96ea98f251f7a0ec662caf2d4eb3eeb0712597",
+    "md5": "c8aae3f7fc4944d78db0ace3f85ddc54",
+    "upstream_checksum_verified": false
+  },
+  {
+    "url": "https://s3.hpc.ut.ee/plutof-public/original/9489f7bc-7cc1-4e0a-84dc-c732476b9acd.tgz",
+    "bytes": 29158924,
+    "sha256": "a340864f947c517b671f1054a261e613a6619ef88dd8000de1699f5e1f21413b",
+    "md5": "8ffa0bb111e9421e5f8ca8448ac5b7e4",
+    "upstream_checksum_verified": false
+  },
+  {
+    "source": "MIDORI2_UNIQ_NUC_GB272_srRNA_BLAST.fasta",
+    "origin": "Maintainer-provided local GB272 srRNA BLAST FASTA",
+    "sha256": "47cb7c5b1341ae94f191685f1c56a29c6da5a6ccd5cdba4fe965bf61e3c7a9c2",
+    "upstream_checksum_verified": false
+  }
+]

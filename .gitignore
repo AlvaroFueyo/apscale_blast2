@@ -37,6 +37,9 @@ Thumbs.db
 *.log
 *.tmp
 *.temp
+.*.work_*/
+*.apscale_blast2.lock
+_apscale_blast2_tmp_*/
 
 # ----------------------------
 # Output folders produced by apscale_blast2 runs

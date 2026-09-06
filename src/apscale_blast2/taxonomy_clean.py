@@ -15,6 +15,22 @@ RE_MULTI = re.compile(r"[,/;]+")
 RE_GENUS = re.compile(r"^[A-Z][a-zA-Z-]+$")
 RE_BINOMIAL = re.compile(r"^\s*([A-Z][a-zA-Z-]+)\s+([a-z][a-zA-Z-]+)\b")
 RE_PREFIX = re.compile(r"^(?:kingdom|superkingdom|phylum|class|order|family|genus|species)\s+", re.I)
+RE_HYBRID = re.compile(r"(?:\s+[xX]\s+|\u00d7|\bhybrid\b)", re.I)
+RE_UNCERTAIN = re.compile(r"\b(?:cf|aff|nr|complex|group)\b", re.I)
+
+
+def species_uncertainty(value: str) -> str:
+    if not isinstance(value, str):
+        return ""
+    if RE_HYBRID.search(value):
+        return "hybrid"
+    if RE_UNCERTAIN.search(value):
+        return "qualified"
+    if RE_MULTI.search(value):
+        return "multiple_names"
+    if RE_QUAL.search(value):
+        return "unresolved_name"
+    return ""
 
 _PLACEHOLDER_VALUES = {
     "", "na", "n/a", "none", "null", "nan",
@@ -59,6 +75,8 @@ def clean_species(s: str, genus: str = "") -> str:
     the binomial as 'Genus epithet'.
     """
     if not isinstance(s, str):
+        return ""
+    if species_uncertainty(s):
         return ""
 
     s = clean_taxon_name(s)

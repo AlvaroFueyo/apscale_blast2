@@ -10,8 +10,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import zipfile
+from .db_build_common import safe_member
 
 
 ENV_DB_HOME = "APSCALE_BLAST2_DB_HOME"
@@ -54,7 +56,7 @@ def db_folder_for_name(db_home: str, name: str) -> str:
         raise ValueError("Empty database name.")
     return os.path.join(db_home, f"db_{safe}")
 
-def install_precompiled_db_zip(zip_path: str, db_home: str, name: str | None = None, overwrite: bool = False) -> str:
+def install_precompiled_db_zip(zip_path: str, db_home: str, name: str | None = None, overwrite: bool = False, blastdbcmd_exe: str = "blastdbcmd") -> str:
     """Install a precompiled BLAST database bundle (.zip) into the local db home.
 
     The archive is expected to contain BLAST indices (e.g., .nsq/.nin/.nhr or .nal)
@@ -112,14 +114,14 @@ def install_precompiled_db_zip(zip_path: str, db_home: str, name: str | None = N
         safe = "db_" + safe
 
     target = os.path.join(db_home, safe)
-    if os.path.exists(target):
-        if not overwrite:
-            raise FileExistsError(f"Target database folder already exists: {target}")
-        shutil.rmtree(target, ignore_errors=True)
+    if os.path.exists(target) and not overwrite:
+        raise FileExistsError(f"Target database folder already exists: {target}")
 
-    tmp = tempfile.mkdtemp(prefix="apscale_blast2_install_")
+    tmp = tempfile.mkdtemp(prefix=".apscale_blast2_install_", dir=db_home)
     try:
         with zipfile.ZipFile(zp, "r") as zf:
+            for member in zf.infolist():
+                safe_member(member.filename)
             zf.extractall(tmp)
 
         # If the ZIP has a single top-level directory, install that directory; otherwise
@@ -127,7 +129,27 @@ def install_precompiled_db_zip(zip_path: str, db_home: str, name: str | None = N
         candidates = [os.path.join(tmp, d) for d in os.listdir(tmp)]
         root_dir = candidates[0] if len(candidates) == 1 and os.path.isdir(candidates[0]) else tmp
 
-        shutil.move(root_dir, target)
+        from .dbs import validate_database, ensure_db_prefix
+        from .taxmap import load_taxmap_as_dict
+        from .streaming import native_db_prefix
+        validate_database(root_dir)
+        load_taxmap_as_dict(root_dir)
+        check = subprocess.run([blastdbcmd_exe, "-db", native_db_prefix(ensure_db_prefix(root_dir)), "-info"], capture_output=True, text=True, errors="replace")
+        if check.returncode:
+            raise ValueError(f"Cannot open the precompiled BLAST database: {check.stderr.strip()}")
+        backup = None
+        if os.path.exists(target):
+            backup = tempfile.mkdtemp(prefix=".apscale_blast2_previous_", dir=db_home)
+            os.rmdir(backup)
+            os.replace(target, backup)
+        try:
+            os.replace(root_dir, target)
+        except BaseException:
+            if backup:
+                os.replace(backup, target)
+            raise
+        if backup:
+            shutil.rmtree(backup)
     finally:
         # If we moved tmp itself, it no longer exists; ignore errors.
         shutil.rmtree(tmp, ignore_errors=True)

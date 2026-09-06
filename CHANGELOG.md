@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased - Reliability and general metabarcoding validation
+
+- Fixed unattended CLI operation, explicit threshold precedence, decimal/range validation, and database-local defaults.
+- Added a non-interactive `build` command, explicit output roots, gzip query support, collision protection and opt-in overwrite.
+- Replaced all-hit accumulation and per-query pandas scans with bounded chunk processing and deterministic assignment.
+- Added transactional per-file publication, cancellable workers, native database preflight, Excel sheet splitting and stable Parquet schemas.
+- Corrected compatible consensus across missing ranks and conservative handling of qualified/hybrid reference names.
+- Added assignment status, resolved rank, hit-limit warnings, original reference names, source-taxonomy issues and JSON provenance.
+- Fixed reference-table association, duplicate/leading-zero IDs, archive traversal and destructive/nested installation edge cases.
+- Corrected MIDORI qualifier preservation, PR2/UNITE stable IDs, official CRUX text parsing and rank-aware SILVA import.
+- Added DiatBarcode v16 RCM/Kociolek trees, conflict consensus, missing-node audit and documented gap removal; retained v12 compatibility.
+- Added synthetic regressions, opt-in native CLI/megablast tests, official-reference validation tools and Windows/Linux CI configuration.
+- Documented scientific limits, supported input dialects, recovery behaviour and migration from previous releases.
+
+Release number is intentionally unchanged pending maintainer selection. Historical
+PDF/manual files are retained as versioned documentation, not current instructions.
+
 ## 1.2.1 — Species restoration, MIDORI handling, and documentation cleanup
 
 - Fixed a taxonomy cleaning bug that could silently erase valid species assignments.

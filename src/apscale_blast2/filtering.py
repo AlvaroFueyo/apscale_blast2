@@ -4,14 +4,24 @@ Helpers to apply similarity-threshold trimming and the APSCALE-like F1–F4 flag
 """
 
 from __future__ import annotations
-from typing import Dict, List
+from typing import Dict
+import math
 
-def thresholds_to_dict(thr_str: str | None) -> Dict[str,int]:
-    defaults = ['97','95','90','87','85']
-    parts = [t.strip() for t in (thr_str or ','.join(defaults)).split(',')]
-    if len(parts) != 5: parts = defaults
-    s,g,f,o,c = [int(x) for x in parts]
-    return {"Species": s, "Genus": g, "Family": f, "Order": o, "Class": c}
+DEFAULT_THRESHOLDS = "97,95,90,87,85"
+
+
+def thresholds_to_dict(thr_str: str | None) -> Dict[str, float]:
+    """Parse rank thresholds without silently replacing malformed input."""
+    parts = (DEFAULT_THRESHOLDS if thr_str is None else thr_str).split(",")
+    try:
+        values = [float(x.strip()) for x in parts]
+    except (ValueError, TypeError) as exc:
+        raise ValueError("Thresholds must be five comma-separated numbers") from exc
+    if len(values) != 5 or not all(math.isfinite(x) and 0 <= x <= 100 for x in values):
+        raise ValueError("Thresholds must be five finite percentages between 0 and 100")
+    if any(a < b for a, b in zip(values, values[1:])):
+        raise ValueError("Thresholds must satisfy species >= genus >= family >= order >= class")
+    return dict(zip(["Species", "Genus", "Family", "Order", "Class"], values))
 
 def trim_by_similarity(row, max_sim: float, thr: Dict[str,int]):
     if max_sim >= thr["Species"]:

@@ -9,9 +9,7 @@ from __future__ import annotations
 import gzip
 import os
 import shutil
-import subprocess
 import tempfile
-import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -36,55 +34,8 @@ def _strip_known_suffixes(name: str) -> str:
 
 
 def _resolve_input_file(input_path: str, workdir: str) -> str:
-    """Return a local path to a fasta(.gz) file.
-
-    If input is a ZIP, extracts the first fasta-like file.
-    """
-    p = os.path.abspath(os.path.expanduser(input_path))
-    if not os.path.exists(p):
-        raise FileNotFoundError(p)
-    if p.lower().endswith(".zip"):
-        with zipfile.ZipFile(p, "r") as zf:
-            members = [m for m in zf.namelist() if not m.endswith("/")]
-            # Extract a FASTA-like member from the archive. If no FASTA is present, this is
-            # likely a precompiled BLAST database archive (indices only) rather than a source FASTA.
-            def is_fasta_member(m: str) -> bool:
-                ml = m.lower()
-                return any(ml.endswith(ext) for ext in FA_EXTS) or any(ml.endswith(ext + ".gz") for ext in FA_EXTS)
-
-            fasta_members = [m for m in members if is_fasta_member(m)]
-            if not fasta_members:
-                raise ValueError(
-                    "No FASTA file was found inside the ZIP archive. If you intended to install a precompiled "
-                    "BLAST database (e.g., a db_*.zip bundle with .nsq/.nin files), use the precompiled database "
-                    "installer instead of the MIDORI2 builder."
-                )
-
-            # Prefer compressed FASTA members first, then plain FASTA.
-            def score(m: str) -> int:
-                ml = m.lower()
-                if any(ml.endswith(ext + ".gz") for ext in FA_EXTS):
-                    return 0
-                return 1
-
-            fasta_members = sorted(fasta_members, key=score)
-            chosen = fasta_members[0]
-            out = os.path.join(workdir, os.path.basename(chosen))
-            zf.extract(chosen, workdir)
-            # if nested folders, move to out
-            extracted = os.path.join(workdir, chosen)
-            if extracted != out:
-                os.makedirs(os.path.dirname(out), exist_ok=True)
-                shutil.move(extracted, out)
-                # cleanup empty dirs
-                try:
-                    root = os.path.join(workdir, os.path.dirname(chosen))
-                    if root and os.path.isdir(root):
-                        shutil.rmtree(root, ignore_errors=True)
-                except Exception:
-                    pass
-            return out
-    return p
+    from .db_build_common import resolve_input_file
+    return resolve_input_file(input_path, workdir)
 
 
 def _midori_token_to_name(t: str) -> str:
@@ -104,7 +55,7 @@ def _midori_token_to_name(t: str) -> str:
     # Higher ranks often stay in one token; species commonly need the first two.
     if len(parts) == 1:
         return parts[0]
-    return " ".join(parts[:2])
+    return " ".join(parts)
 
 
 def _iter_fasta_headers(path: str):
@@ -134,6 +85,8 @@ def midori2_taxonomy_table(fasta_path: str) -> pd.DataFrame:
             continue
         accession = parts[0].lstrip('>')
         tax_parts = parts[1:]
+        if "###root_" not in accession or len(tax_parts) != 7:
+            raise ValueError("Unsupported MIDORI2 header; use the BLAST-formatted FASTA with root plus seven ranks")
 
         taxonomy = []
         for t in tax_parts:
@@ -200,8 +153,8 @@ def build_midori2_db(
 
         # Build BLAST indices
         prefix = os.path.join(tmp_db_dir, "db")
-        cmd = [makeblastdb_exe, "-in", resolved, "-title", "db", "-dbtype", "nucl", "-out", prefix]
-        subprocess.run(cmd, check=True)
+        from .db_build_common import run_makeblastdb
+        run_makeblastdb(makeblastdb_exe, resolved, prefix, tax_df)
 
         # Write taxonomy parquet
         tax_path = os.path.join(tmp_out, "db_taxonomy.parquet.snappy")
@@ -209,7 +162,7 @@ def build_midori2_db(
 
         # Move atomically
         os.makedirs(os.path.dirname(out_dir), exist_ok=True)
-        shutil.move(tmp_out, out_dir)
-        return out_dir
+        from .db_build_common import install_built_database
+        return install_built_database(tmp_out, out_dir)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)

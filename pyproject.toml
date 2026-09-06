@@ -1,15 +1,16 @@
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "apscale-blast2"
 version = "1.2.1"
-description = "APSCALE-like BLAST with per-FASTA DB selection, APSCALE flags, taxonomy cleaning, tqdm progress, Python 3.13 compatible."
+description = "Local BLAST-based taxonomic assignment for metabarcoding with curated databases, auditable consensus and bounded-memory hit processing."
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{name = "You"}]
 dependencies = ["pandas>=2.0","openpyxl>=3.1","pyarrow>=12","tqdm>=4.66"]
 [project.scripts]

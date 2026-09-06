@@ -9,9 +9,8 @@ from __future__ import annotations
 import gzip
 import os
 import shutil
-import subprocess
 import tempfile
-import zipfile
+import csv
 from pathlib import Path
 
 import pandas as pd
@@ -32,43 +31,8 @@ def _strip_known_suffixes(name: str) -> str:
 
 
 def _resolve_input_file(input_path: str, workdir: str) -> str:
-    """Return a local path to a fasta(.gz) file.
-
-    If input is a ZIP, extracts the first fasta-like file found.
-    """
-    p = os.path.abspath(os.path.expanduser(input_path))
-    if not os.path.exists(p):
-        raise FileNotFoundError(p)
-    if p.lower().endswith(".zip"):
-        with zipfile.ZipFile(p, "r") as zf:
-            members = [m for m in zf.namelist() if not m.endswith("/")]
-
-            def score(m: str) -> int:
-                ml = m.lower()
-                if any(ml.endswith(ext + ".gz") for ext in FA_EXTS):
-                    return 0
-                if any(ml.endswith(ext) for ext in FA_EXTS):
-                    return 1
-                return 2
-
-            members = sorted(members, key=score)
-            if not members:
-                raise ValueError("The ZIP archive is empty.")
-            chosen = members[0]
-            zf.extract(chosen, workdir)
-            extracted = os.path.join(workdir, chosen)
-            out = os.path.join(workdir, os.path.basename(chosen))
-            if extracted != out:
-                os.makedirs(os.path.dirname(out), exist_ok=True)
-                shutil.move(extracted, out)
-                try:
-                    root = os.path.join(workdir, os.path.dirname(chosen))
-                    if root and os.path.isdir(root):
-                        shutil.rmtree(root, ignore_errors=True)
-                except Exception:
-                    pass
-            return out
-    return p
+    from .db_build_common import resolve_input_file
+    return resolve_input_file(input_path, workdir)
 
 
 def _iter_fasta_headers(path: str):
@@ -88,15 +52,34 @@ def _load_taxonomy_table(taxonomy_path: str) -> pd.DataFrame:
 
     low = p.lower()
     if low.endswith(".xlsx") or low.endswith(".xls"):
-        df = pd.read_excel(p)
+        df = pd.read_excel(p, dtype=str)
     else:
-        # Till: sep='[;\t]' engine='python'
-        df = pd.read_csv(p, sep=r"[;\t]", engine="python", dtype=str)
+        with open(p, encoding="utf-8-sig", newline="") as handle:
+            sample = handle.read(8192)
+            handle.seek(0)
+            if not sample.strip():
+                raise ValueError("Empty trnL taxonomy table")
+            delimiter = "\t" if "\t" in sample.splitlines()[0] else csv.Sniffer().sniff(sample, delimiters=",;").delimiter
+            rows = list(csv.reader(handle, delimiter=delimiter))
+        if rows and len(rows[0]) == 2:
+            # Official CRUX: no header, accession TAB seven semicolon-separated ranks.
+            rows = [[row[0], *row[1].split(";")] for row in rows if row]
+        columns = ["Accession", "superkingdom", "phylum", "class", "order", "family", "genus", "species"]
+        if not rows:
+            raise ValueError("Empty trnL taxonomy table")
+        header = [name.strip().lower() for name in rows[0]]
+        if header[0] in {"accession", "sequence id", "sequence_id", "id"}:
+            df = pd.DataFrame(rows[1:], columns=header)
+            df = df.rename(columns={header[0]: "Accession"})
+            if not set(columns).issubset(df.columns):
+                raise ValueError("trnL table requires named Accession and seven rank columns")
+            df = df[columns]
+        else:
+            if any(len(row) != 8 for row in rows):
+                raise ValueError("Headerless CRUX taxonomy must have exactly eight fields")
+            df = pd.DataFrame(rows, columns=columns)
     df = df.fillna("")
-    if df.shape[1] < 8:
-        raise ValueError("The trnL taxonomy table must have at least 8 columns (Accession + 7 ranks).")
-    df = df.iloc[:, :8].copy()
-    df.columns = [
+    columns = [
         "Accession",
         "superkingdom",
         "phylum",
@@ -106,7 +89,12 @@ def _load_taxonomy_table(taxonomy_path: str) -> pd.DataFrame:
         "genus",
         "species",
     ]
-    return df
+    renamed = {c: str(c).strip().lower() for c in df.columns}
+    renamed = {c: "Accession" if name in {"accession", "sequence id", "sequence_id", "id"} else "superkingdom" if name in {"kingdom", "domain"} else name for c, name in renamed.items()}
+    df = df.rename(columns=renamed)
+    if not set(columns).issubset(df.columns):
+        raise ValueError("trnL taxonomy requires named Accession and seven rank columns")
+    return df[columns].copy()
 
 
 def build_trnl_db(
@@ -149,14 +137,14 @@ def build_trnl_db(
             shutil.copy2(os.path.abspath(os.path.expanduser(taxonomy_path)), os.path.join(tmp_out, "source_taxonomy" + Path(taxonomy_path).suffix))
 
         prefix = os.path.join(tmp_db_dir, "db")
-        cmd = [makeblastdb_exe, "-in", resolved, "-title", "db", "-dbtype", "nucl", "-out", prefix]
-        subprocess.run(cmd, check=True)
+        from .db_build_common import run_makeblastdb
+        run_makeblastdb(makeblastdb_exe, resolved, prefix, tax_df)
 
         tax_path = os.path.join(tmp_out, "db_taxonomy.parquet.snappy")
         tax_df.to_parquet(tax_path)
 
         os.makedirs(os.path.dirname(out_dir), exist_ok=True)
-        shutil.move(tmp_out, out_dir)
-        return out_dir
+        from .db_build_common import install_built_database
+        return install_built_database(tmp_out, out_dir)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)

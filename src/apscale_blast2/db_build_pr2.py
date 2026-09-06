@@ -9,9 +9,7 @@ from __future__ import annotations
 import gzip
 import os
 import shutil
-import subprocess
 import tempfile
-import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -32,40 +30,8 @@ def _strip_known_suffixes(name: str) -> str:
 
 
 def _resolve_input_file(input_path: str, workdir: str) -> str:
-    """Return a local path to a fasta(.gz) file. If input is a ZIP, extracts the first fasta-like file."""
-    p = os.path.abspath(os.path.expanduser(input_path))
-    if not os.path.exists(p):
-        raise FileNotFoundError(p)
-    if p.lower().endswith(".zip"):
-        with zipfile.ZipFile(p, "r") as zf:
-            members = [m for m in zf.namelist() if not m.endswith("/")]
-
-            def score(m: str) -> int:
-                ml = m.lower()
-                if any(ml.endswith(ext + ".gz") for ext in FA_EXTS):
-                    return 0
-                if any(ml.endswith(ext) for ext in FA_EXTS):
-                    return 1
-                return 2
-
-            members = sorted(members, key=score)
-            if not members:
-                raise ValueError("The ZIP archive is empty.")
-            chosen = members[0]
-            zf.extract(chosen, workdir)
-            extracted = os.path.join(workdir, chosen)
-            out = os.path.join(workdir, os.path.basename(chosen))
-            if extracted != out:
-                os.makedirs(os.path.dirname(out), exist_ok=True)
-                shutil.move(extracted, out)
-                try:
-                    root = os.path.join(workdir, os.path.dirname(chosen))
-                    if root and os.path.isdir(root):
-                        shutil.rmtree(root, ignore_errors=True)
-                except Exception:
-                    pass
-            return out
-    return p
+    from .db_build_common import resolve_input_file
+    return resolve_input_file(input_path, workdir)
 
 
 def _iter_fasta_headers(path: str):
@@ -87,11 +53,13 @@ def pr2_taxonomy_table(fasta_path: str) -> pd.DataFrame:
     rows = []
     for hdr in _iter_fasta_headers(fasta_path):
         token = hdr.split()[0]
-        accession = token
+        accession = token.split(";", 1)[0]
 
         tax_dict = {}
         parts = token.split(";")
         seg = parts[1] if len(parts) > 1 else ""
+        if not seg.startswith("tax="):
+            raise ValueError("Unsupported PR2 FASTA dialect; use the official UTAX FASTA release")
         if "=" in seg:
             seg = seg.split("=", 1)[1]
         for item in seg.split(","):
@@ -100,6 +68,8 @@ def pr2_taxonomy_table(fasta_path: str) -> pd.DataFrame:
                 tax_dict[k.strip()] = v.replace("_", " ").strip()
 
         taxonomy = [tax_dict.get(t, "") for t in ["k", "p", "c", "o", "f", "g", "s"]]
+        if not any(taxonomy):
+            raise ValueError(f"PR2 header has no recognized ranks: {token}")
         rows.append([accession] + taxonomy)
 
     return pd.DataFrame(
@@ -147,14 +117,14 @@ def build_pr2_db(
             shutil.copy2(resolved, src_dst)
 
         prefix = os.path.join(tmp_db_dir, "db")
-        cmd = [makeblastdb_exe, "-in", resolved, "-title", "db", "-dbtype", "nucl", "-out", prefix]
-        subprocess.run(cmd, check=True)
+        from .db_build_common import run_makeblastdb
+        run_makeblastdb(makeblastdb_exe, resolved, prefix, tax_df)
 
         tax_path = os.path.join(tmp_out, "db_taxonomy.parquet.snappy")
         tax_df.to_parquet(tax_path)
 
         os.makedirs(os.path.dirname(out_dir), exist_ok=True)
-        shutil.move(tmp_out, out_dir)
-        return out_dir
+        from .db_build_common import install_built_database
+        return install_built_database(tmp_out, out_dir)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)

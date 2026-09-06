@@ -11,19 +11,15 @@ cache the taxonomy mapping table in-memory within a single Python run.
 """
 
 from __future__ import annotations
-import os, subprocess, time, re, sys, logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os, subprocess, re, logging
 from dataclasses import dataclass
+import math
 from typing import List, Dict
 import pandas as pd
-from tqdm import tqdm
 
-from .io_utils import split_fasta, read_fasta_order
-from .dbs import DatabaseSpec, ensure_db_prefix
+from .dbs import DatabaseSpec
 from .taxmap import load_taxmap_as_dict
-from .filtering import thresholds_to_dict, trim_by_similarity, choose_flag_rest
-from .taxonomy_clean import clean_species, clean_genus, clean_taxon_name
-from . import __version__
+from .filtering import thresholds_to_dict
 
 TAX_COLS = ["Kingdom","Phylum","Class","Order","Family","Genus","Species"]
 RANKS_HIGH_TO_LOW = TAX_COLS
@@ -50,6 +46,7 @@ BLAST_OUTFMT = (
 # use the same database within a single execution.
 # Key: absolute BLAST DB prefix (no extension), normalised.
 _TAX_CACHE: Dict[str, Dict[str, List[str]]] = {}
+_TAX_SIGNATURES = {}
 
 def _tax_cache_key(db_prefix: str) -> str:
     # Normalise and absolutise so that equivalent routes are cached in the same way.
@@ -62,12 +59,18 @@ def _tax_cache_key(db_prefix: str) -> str:
 def get_tax_dict_cached(db_prefix: str, logger: logging.Logger) -> Dict[str, List[str]]:
     """Load the taxonomy mapping associated with a BLAST DB and cache it in memory."""
     key = _tax_cache_key(db_prefix)
-    if key in _TAX_CACHE:
+    from .taxmap import find_taxmaps_paths
+    signature = tuple((p, os.stat(p).st_mtime_ns, os.stat(p).st_size) for p in find_taxmaps_paths(db_prefix))
+    if key in _TAX_CACHE and _TAX_SIGNATURES.get(key) == signature:
         logger.debug("Taxonomy cache hit for %s", key)
         return _TAX_CACHE[key]
     logger.info("Loading taxonomy...")
     tax_dict = load_taxmap_as_dict(db_prefix)
+    if len(_TAX_CACHE) >= 4:
+        _TAX_CACHE.clear()
+        _TAX_SIGNATURES.clear()
     _TAX_CACHE[key] = tax_dict
+    _TAX_SIGNATURES[key] = signature
     return tax_dict
 
 @dataclass
@@ -94,6 +97,8 @@ class RunOptions:
     # - excel: write .xlsx using openpyxl (default)
     # - parquet: write .parquet.snappy (requires pyarrow)
     output_format: str = "excel"
+    output_dir: str | None = None
+    overwrite: bool = False
 
     # Flagging / assignment scheme
     # - apscale2: new MRCA-based trimming flags (default)
@@ -104,6 +109,23 @@ class RunOptions:
     # 1 = Similarity -> evalue  ("mode 1" (classic): max similarity first; tie-breaker -> min E-value)
     # 2 = E-value -> Similarity  (min E-value first; tie-breaker -> max similarity)
     filter_mode: int = 1
+
+    def __post_init__(self):
+        thresholds_to_dict(self.thresholds)
+        for name, lo, hi in [("threads", 0, 1024), ("workers", 1, 128), ("subset_size", 1, 1000000), ("max_target_seqs", 1, 1000)]:
+            value = getattr(self, name)
+            if not isinstance(value, int) or not lo <= value <= hi:
+                raise ValueError(f"{name} must be an integer in [{lo}, {hi}]")
+        for name, lo, hi in [("min_qcov", 0, 100), ("prefer_qcov", 0, 100), ("min_pident", 0, 100), ("max_evalue", 1e-300, 1)]:
+            value = getattr(self, name)
+            if not math.isfinite(value) or not lo <= value <= hi:
+                raise ValueError(f"Invalid {name}: {value}")
+        if self.flag_scheme not in {"apscale", "apscale2"} or self.filter_mode not in {1, 2}:
+            raise ValueError("Invalid assignment scheme or filter mode")
+        if self.task not in {"blastn", "megablast"} or self.output_format not in {"excel", "parquet"}:
+            raise ValueError("Invalid BLAST task or output format")
+        if self.flag_scheme == "apscale":
+            self.task, self.min_qcov, self.prefer_qcov, self.max_target_seqs = "blastn", 0.0, 0.0, 20
 
 def _norm(p: str) -> str:
     return p.replace('\\','/')
@@ -120,7 +142,10 @@ def _run_single(
     perc_identity: float | None,
     max_evalue: float,
     min_qcov_hsp: float,
+    cancel_event=None,
 ) -> str:
+    if cancel_event is not None and cancel_event.is_set():
+        raise InterruptedError("BLAST cancelled")
     outp = query_fa + ".tsv"
     cmd = [blastn, "-db", _norm(db_prefix), "-query", _norm(query_fa), "-outfmt", BLAST_OUTFMT, "-out", _norm(outp),
            "-task", task, "-max_hsps", "1", "-max_target_seqs", str(max_target), "-num_threads", str(threads)]
@@ -135,9 +160,30 @@ def _run_single(
     if log_debug:
         logging.getLogger("apscale_blast2").debug("CMD: %s", " ".join(cmd))
     try:
-        subprocess.run(cmd, check=True, capture_output=(not log_debug), text=True)
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace") as process:
+            try:
+                while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise InterruptedError("BLAST cancelled")
+                    try:
+                        stdout, stderr = process.communicate(timeout=0.25)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+                if process.returncode:
+                    raise subprocess.CalledProcessError(process.returncode, cmd, output=stdout, stderr=stderr)
+                if log_debug and stderr:
+                    logging.getLogger("apscale_blast2").debug("BLAST: %s", stderr.strip())
+            except BaseException:
+                process.terminate()
+                try:
+                    process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+                raise
     except Exception as e:
-        logging.getLogger("apscale_blast2").error("Failed to run BLAST: %s", e)
+        logging.getLogger("apscale_blast2").error("Failed to run BLAST: %s; stderr: %s", e, getattr(e, "stderr", ""))
         print("BLAST CMD:", " ".join(cmd), flush=True)
         raise
     return outp
@@ -171,7 +217,7 @@ def _resolve_sequence_id(row, tax_dict):
     sseqid = str(row.get("sseqid","") or "")
     sacc   = str(row.get("sacc","") or "")
     saccv  = str(row.get("saccver","") or "")
-    keys += [ sseqid, _before_semicolon(sseqid), _before_semicolon(_first_token(sseqid)), _before_hash(sseqid), _first_token(sseqid), _pipe_core(sseqid), _strip_lcl(sseqid),
+    keys += [ sseqid, sseqid.split("|k__", 1)[0], _before_semicolon(sseqid), _before_semicolon(_first_token(sseqid)), _before_hash(sseqid), _first_token(sseqid), _pipe_core(sseqid), _strip_lcl(sseqid),
               _strip_version(sacc), _strip_version(saccv) ]
     for k in keys:
         if k in tax_dict:
@@ -210,160 +256,6 @@ def _extract_accession(subject_id: str) -> str:
     return core
 
 
-def _try_numeric(series: pd.Series, *, integer: bool) -> pd.Series:
-    """Best-effort dtype coercion.
-
-    We try to convert columns that should be numeric (for Parquet exports and
-    general downstream sanity). If conversion produces only NaNs while the
-    original column had non-empty values, we keep the original dtype to avoid
-    breaking edge-case inputs.
-    """
-
-    if series is None:
-        return series
-
-    s0 = series
-    s = pd.to_numeric(s0, errors="coerce")
-    # If conversion failed completely but there are non-empty original values,
-    # keep as-is.
-    try:
-        has_nonempty = s0.astype(str).str.strip().ne("").any()
-    except Exception:
-        has_nonempty = True
-    if has_nonempty and s.notna().sum() == 0:
-        return s0
-
-    if integer:
-        try:
-            non_na = s.dropna()
-            if not non_na.empty and (non_na % 1 == 0).all():
-                return s.round().astype("Int64")
-        except Exception:
-            pass
-    return s.astype(float)
-
-
-def _prepare_output_dtypes(df: pd.DataFrame, *, int_cols: list[str], float_cols: list[str]) -> pd.DataFrame:
-    out = df.copy()
-    for c in int_cols:
-        if c in out.columns:
-            out[c] = _try_numeric(out[c], integer=True)
-    for c in float_cols:
-        if c in out.columns:
-            out[c] = _try_numeric(out[c], integer=False)
-    return out
-
-
-def _write_table(df: pd.DataFrame, *, path: str, fmt: str, sheet_name: str | None = None):
-    fmt = (fmt or "excel").lower().strip()
-    if fmt == "parquet":
-        df.to_parquet(path, index=False, compression="snappy")
-        return
-    # Default: Excel
-    with pd.ExcelWriter(path) as xw:
-        df.to_excel(xw, index=False, sheet_name=(sheet_name or "Sheet1"))
-
-def _clean_tax_value(v: object) -> str:
-    """Normalise taxonomy cell values and drop rank placeholders/unclassified labels."""
-    if v is None:
-        return ""
-    s = clean_taxon_name(str(v))
-    if not s:
-        return ""
-    if s.lower() in TAX_PLACEHOLDERS:
-        return ""
-    return s
-
-
-def _dedup_taxa_keep_best(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep the best representative row per trimmed taxonomy profile."""
-    if df.empty:
-        return df.copy()
-    out = df.copy()
-    out["_evalue_num"] = pd.to_numeric(out.get("evalue"), errors="coerce")
-    out["_sim_num"] = pd.to_numeric(out.get("Similarity"), errors="coerce")
-    out["_qcov_num"] = pd.to_numeric(out.get("query_coverage"), errors="coerce")
-    out = (
-        out.sort_values(["_sim_num", "_evalue_num", "_qcov_num"], ascending=[False, True, False])
-           .drop_duplicates(subset=TAX_COLS, keep="first")
-           .drop(columns=["_evalue_num", "_sim_num", "_qcov_num"], errors="ignore")
-           .reset_index(drop=True)
-    )
-    return out
-
-
-def _best_row_by_metrics(df: pd.DataFrame) -> dict[str, object]:
-    if df.empty:
-        return {}
-    out = df.copy()
-    out["_evalue_num"] = pd.to_numeric(out.get("evalue"), errors="coerce")
-    out["_sim_num"] = pd.to_numeric(out.get("Similarity"), errors="coerce")
-    out["_qcov_num"] = pd.to_numeric(out.get("query_coverage"), errors="coerce")
-    out = out.sort_values(["_sim_num", "_evalue_num", "_qcov_num"], ascending=[False, True, False])
-    out = out.drop(columns=["_evalue_num", "_sim_num", "_qcov_num"], errors="ignore")
-    return out.iloc[0].to_dict()
-
-
-def _uniq_nonempty(df: pd.DataFrame, col: str) -> set[str]:
-    if col not in df.columns or df.empty:
-        return set()
-    vals = df[col].fillna("").astype(str).map(_clean_tax_value)
-    return {v for v in vals.tolist() if v}
-
-
-def _compute_mrca_rank(df: pd.DataFrame) -> str | None:
-    """Deepest rank shared by all surviving taxa, ignoring blanks where possible."""
-    mrca_rank = None
-    for rnk in RANKS_HIGH_TO_LOW:
-        vals = _uniq_nonempty(df, rnk)
-        if len(vals) == 1:
-            mrca_rank = rnk
-            continue
-        if len(vals) == 0:
-            break
-        break
-    return mrca_rank
-
-
-def _trim_row_to_mrca(row: dict[str, object], mrca_rank: str | None) -> None:
-    if mrca_rank is None:
-        for c in TAX_COLS:
-            row[c] = ""
-        return
-    mrca_idx = RANKS_HIGH_TO_LOW.index(mrca_rank)
-    for c in RANKS_HIGH_TO_LOW[mrca_idx + 1:]:
-        row[c] = ""
-
-
-def _build_ambiguous_taxa_labels(df: pd.DataFrame) -> list[str]:
-    """Return a readable list of the surviving ambiguous taxa."""
-    amb: list[str] = []
-    for _, rr in df.iterrows():
-        genus = _clean_tax_value(rr.get("Genus", ""))
-        species = _clean_tax_value(rr.get("Species", ""))
-        family = _clean_tax_value(rr.get("Family", ""))
-        order = _clean_tax_value(rr.get("Order", ""))
-        klass = _clean_tax_value(rr.get("Class", ""))
-        phylum = _clean_tax_value(rr.get("Phylum", ""))
-        kingdom = _clean_tax_value(rr.get("Kingdom", ""))
-
-        label = ""
-        if species:
-            if genus:
-                if species.lower().startswith((genus + " ").lower()):
-                    label = species
-                else:
-                    label = f"{genus} {species}".strip() if " " not in species else species
-            else:
-                label = species
-        elif genus:
-            label = genus
-        else:
-            label = family or order or klass or phylum or kingdom
-
-        if label and label.lower() not in TAX_PLACEHOLDERS:
-            amb.append(label)
-    return sorted(set(amb))
 
 
 def _prefilter_hits(raw: pd.DataFrame, min_qcov: float, max_evalue: float, min_pident: float) -> pd.DataFrame:
@@ -379,414 +271,10 @@ def _prefilter_hits(raw: pd.DataFrame, min_qcov: float, max_evalue: float, min_p
     return df[mask].copy()
 
 def run(query_fasta: str, out_dir: str, db: DatabaseSpec, opts: RunOptions):
-    import shutil
-    logger = logging.getLogger("apscale_blast2")
-    os.makedirs(out_dir, exist_ok=True)
-    if opts.threads <= 0:
-        try: cpu = os.cpu_count() or 1
-        except Exception: cpu = 1
-        opts.threads = max(1, cpu - 2)
+    """Run one FASTA; out_dir is retained for API compatibility, never deleted.
 
-    fasta_order = read_fasta_order(query_fasta)
-    db_prefix = ensure_db_prefix(db.path)
-    tax_dict = get_tax_dict_cached(db_prefix, logger)
-
-    subsets_dir = os.path.join(out_dir, "subsets")
-    print("Creating FASTA subsets...", flush=True)
-    subset_fastas = split_fasta(query_fasta, subsets_dir, subset_size=opts.subset_size)
-    total = len(subset_fastas)
-    workers = max(1, min(opts.workers, total))
-    threads_per = max(1, opts.threads // workers)
-    print(f"Starting BLAST: {total} chunks | workers={workers} | total threads={opts.threads}", flush=True)
-    print("Running local BLAST (this may take a while)...", flush=True)
-
-    t0 = time.time()
-    tsvs: List[str] = []
-    pbar = tqdm(total=total, desc=os.path.basename(query_fasta)+" BLAST",
-                unit="subset", dynamic_ncols=True, leave=True)
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = [ex.submit(
-                    _run_single,
-                    opts.blastn_exe,
-                    db_prefix,
-                    fa,
-                    threads_per,
-                    opts.task,
-                    opts.max_target_seqs,
-                    opts.masking,
-                    logger.level<=logging.DEBUG,
-                    (opts.min_pident if opts.inline_perc_identity else None),
-                    float(opts.max_evalue),
-                    float(opts.min_qcov),
-                )
-                for fa in subset_fastas]
-        for fut in as_completed(futs):
-            tsvs.append(fut.result())
-            pbar.update(1)
-    pbar.close()
-
-    print("Starting post-processing...", flush=True)
-    print("Merging TSV files...", flush=True)
-    cols = [
-        "qseqid",
-        "sseqid",
-        "sacc",
-        "saccver",
-        "pident",
-        "evalue",
-        "qcovs",
-        "qcovhsp",
-        "mismatch",
-        "gapopen",
-    ]
-    dfs = [pd.read_csv(p, sep="\t", names=cols, dtype=str, na_filter=False) for p in tsvs]
-    raw = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame(columns=cols)
-
-    print("Applying prefilter...", flush=True)
-    raw = _prefilter_hits(raw, opts.min_qcov, opts.max_evalue, opts.min_pident)
-
-    print("Mapping taxonomy...", flush=True)
-    rows = []
-    for _, r in raw.iterrows():
-        key, ranks = _resolve_sequence_id(r, tax_dict)
-        if ranks:
-            kingdom = clean_taxon_name(ranks[0])
-            phylum = clean_taxon_name(ranks[1])
-            klass = clean_taxon_name(ranks[2])
-            order = clean_taxon_name(ranks[3])
-            family = clean_taxon_name(ranks[4])
-            genus = clean_genus(ranks[5])
-            species = clean_species(ranks[6], genus=genus)
-        else:
-            kingdom = phylum = klass = order = family = genus = species = ""
-        subject_id = key or r["sseqid"]
-        # BLAST may not populate sacc/saccver for custom subject ids; also, some
-        # curated DB headers embed taxonomy after a delimiter (e.g. "###...").
-        # Always normalise to an accession-like identifier for cleaner exports.
-        accession_src = r.get("saccver", "") or r.get("sacc", "") or subject_id
-        accession = _extract_accession(accession_src)
-
-        # Coverage: prefer qcovs when present; fallback to qcovhsp.
-        qcov = None
-        try:
-            if pd.notna(r.get("qcovs")):
-                qcov = float(r["qcovs"])
-            elif pd.notna(r.get("qcovhsp")):
-                qcov = float(r["qcovhsp"])
-        except Exception:
-            qcov = None
-        if qcov is None or qcov != qcov:
-            qcov = 0.0
-
-        rows.append({
-            "unique ID": r["qseqid"],
-            "Accession": accession,
-            "Kingdom": kingdom,
-            "Phylum":  phylum,
-            "Class":   klass,
-            "Order":   order,
-            "Family":  family,
-            "Genus":   genus,
-            "Species": species,
-            "Similarity": float(r["pident"]) if r["pident"]==r["pident"] else 0.0,
-            "evalue": float(r["evalue"]) if r["evalue"]==r["evalue"] else 1.0,
-            "query_coverage": float(qcov),
-            "mismatch": int(r["mismatch"]) if r.get("mismatch", "") else 0,
-            "gapopen": int(r["gapopen"]) if r.get("gapopen", "") else 0,
-        })
-    hits = pd.DataFrame(
-        rows,
-        columns=[
-            "unique ID",
-            "Accession",
-            "Kingdom",
-            "Phylum",
-            "Class",
-            "Order",
-            "Family",
-            "Genus",
-            "Species",
-            "Similarity",
-            "evalue",
-            "query_coverage",
-            "mismatch",
-            "gapopen",
-        ],
-    )
-
-    # Ensure sane dtypes (especially important for Parquet exports)
-    hits = _prepare_output_dtypes(
-        hits,
-        int_cols=["mismatch", "gapopen"],
-        float_cols=["Similarity", "evalue", "query_coverage"],
-    )
-
-    fasta_dir = os.path.dirname(os.path.abspath(query_fasta)); parent = os.path.dirname(fasta_dir)
-    raw_dir = os.path.join(parent, "raw_blast"); tax_dir = os.path.join(parent, "taxonomy")
-    os.makedirs(raw_dir, exist_ok=True); os.makedirs(tax_dir, exist_ok=True)
-    base = os.path.splitext(os.path.basename(query_fasta))[0]
-    fmt = (getattr(opts, "output_format", "excel") or "excel").lower().strip()
-    ext = ".parquet.snappy" if fmt == "parquet" else ".xlsx"
-
-    raw_path = os.path.join(raw_dir, f"{base}_raw_blast{ext}")
-    print("Writing raw output...", flush=True)
-    _write_table(hits, path=raw_path, fmt=fmt, sheet_name="raw")
-
-    print("Applying flags and similarity trimming...", flush=True)
-    thr = thresholds_to_dict(opts.thresholds)
-
-    out_rows: List[Dict[str,object]] = []
-    sub_by_q = {qid: sub for qid, sub in hits.groupby("unique ID", sort=False)}
-    fasta_ids = read_fasta_order(query_fasta)
-
-    for qid in fasta_ids:
-        sub = sub_by_q.get(qid, pd.DataFrame(columns=hits.columns))
-        if sub.empty:
-            row = {"unique ID": qid}
-            for c in TAX_COLS: row[c] = "NoMatch"
-            row.update({"Similarity":0.0,"query_coverage":0.0,"evalue":1.0,"Flag":"","Ambiguous taxa":""})
-            out_rows.append(row)
-            continue
-
-        # Soft query coverage filter: if there are hits with coverage >= prefer_qcov,
-        # keep ONLY those; otherwise keep all hits for the query.
-        if float(opts.prefer_qcov) > 0:
-            sub_hi = sub[sub["query_coverage"] >= float(opts.prefer_qcov)].copy()
-            if not sub_hi.empty:
-                sub = sub_hi
-
-        # Hit selection (compatibility with classic APSCALE modes)
-        # - mode 1: Similarity -> evalue
-        # - mode 2: evalue -> Similarity
-        if int(opts.filter_mode) == 1:
-            max_sim = float(sub["Similarity"].max())
-            df1 = sub[(sub["Similarity"] - max_sim).abs() <= 1e-9].copy()
-            min_e = float(df1["evalue"].min())
-            df1 = df1[df1["evalue"] == min_e].copy()
-            max_sim_ref = max_sim
-        else:
-            min_e = float(sub["evalue"].min())
-            df1 = sub[sub["evalue"] == min_e].copy()
-            max_sim = float(df1["Similarity"].max()) if not df1.empty else float(sub["Similarity"].max())
-            df1 = df1[(df1["Similarity"] - max_sim).abs() <= 1e-9].copy()
-            max_sim_ref = max_sim
-
-        rows2_full = []
-        for _, rr in df1.iterrows():
-            row = rr[TAX_COLS + ["Similarity", "evalue", "query_coverage"]].to_dict()
-            trim_by_similarity(row, float(max_sim_ref), thr)
-            rows2_full.append({"unique ID": qid, **row})
-
-        # --- Ambiguity handling / assignment ---
-        # 1) Remove duplicate hits after similarity-threshold trimming *by taxonomy*.
-        #    Metric differences alone should not create artificial conflicts.
-        # 2) If only one trimmed taxonomy remains, no flag is set.
-        # 3) Otherwise, resolve according to the selected flag scheme.
-
-        df2 = pd.DataFrame(rows2_full)
-        df_tax_best = _dedup_taxa_keep_best(df2)
-
-        # 1) Only one taxonomy remains -> no ambiguity
-        if len(df_tax_best) == 1:
-            r = df_tax_best.iloc[0].to_dict()
-            r["Flag"] = ""
-            r["Ambiguous taxa"] = ""
-            r["unique ID"] = qid
-            out_rows.append(r)
-            continue
-
-        scheme = getattr(opts, "flag_scheme", "apscale2")
-
-        # 2) Assignment & flags
-        if scheme == "apscale":
-            # ---- Legacy APSCALE-BLAST flags (dominant-species logic, etc.)
-
-            # Below species threshold -> trim ranks until unique (no flag)
-            if float(max_sim_ref) < float(thr["Species"]):
-                df_tmp = df_tax_best.copy()
-                for level in ["Species", "Genus", "Family", "Order", "Class", "Phylum", "Kingdom"]:
-                    df_tmp[level] = ""
-                    df_tmp = _dedup_taxa_keep_best(df_tmp)
-                    if len(df_tmp) == 1:
-                        break
-                r = df_tmp.iloc[0].to_dict()
-                r["Flag"] = ""
-                r["Ambiguous taxa"] = ""
-                r["unique ID"] = qid
-                out_rows.append(r)
-                continue
-
-            # Species-level reference -> ambiguity flags
-            df2c = df2.copy()
-            df2c["duplicate_count"] = df2c.groupby(TAX_COLS, dropna=False)["Species"].transform("size")
-            max_dup = int(df2c["duplicate_count"].max()) if not df2c.empty else 0
-            df_dom = df2c[df2c["duplicate_count"] == max_dup].drop_duplicates(subset=TAX_COLS)
-
-            # F1: dominant species present
-            if len(df_dom) == 1:
-                dom_row = df_dom.drop(columns=["duplicate_count"]).iloc[0].to_dict()
-                dom_row["Flag"] = "F1 (Dominant species)"
-                dom_row["Ambiguous taxa"] = ", ".join(_build_ambiguous_taxa_labels(df_tax_best))
-                dom_row["unique ID"] = qid
-                out_rows.append(dom_row)
-                continue
-
-            rows3 = df_tax_best.to_dict(orient="records")
-            amb_species = sorted({s for s in df2["Species"].drop_duplicates().tolist() if s})
-            chosen = choose_flag_rest(rows3, amb_species)
-            chosen["unique ID"] = qid
-            out_rows.append(chosen)
-            continue
-
-        # ---- APSCALE-BLAST2 strict flags (MRCA-based, no dominance)
-        mrca_rank = _compute_mrca_rank(df_tax_best)
-
-        # Determine the diversity rank immediately below the MRCA (used for flag numbering/text).
-        diversity_rank = None
-        if mrca_rank is None:
-            diversity_rank = "Kingdom"
-        else:
-            idx = RANKS_HIGH_TO_LOW.index(mrca_rank)
-            if idx < len(RANKS_HIGH_TO_LOW) - 1:
-                diversity_rank = RANKS_HIGH_TO_LOW[idx + 1]
-            else:
-                diversity_rank = None
-
-        # If there is no diversity below MRCA (i.e., only one taxon remains), no flag.
-        needs_flag = False
-        if diversity_rank is not None:
-            vals = _uniq_nonempty(df_tax_best, diversity_rank)
-            needs_flag = len(vals) > 1
-
-        out = _best_row_by_metrics(df_tax_best)
-
-        if not needs_flag:
-            out["Flag"] = ""
-            out["Ambiguous taxa"] = ""
-            out["unique ID"] = qid
-            out_rows.append(out)
-            continue
-
-        amb = _build_ambiguous_taxa_labels(df_tax_best)
-
-        # Special Fl1 handling: if all surviving taxa belong to the same genus,
-        # keep that genus and summarise the species ambiguity in the Species field
-        # without using a dominance criterion.
-        genera = sorted(_uniq_nonempty(df_tax_best, "Genus"))
-        species_vals = sorted(_uniq_nonempty(df_tax_best, "Species"))
-        if diversity_rank == "Species" and len(genera) == 1 and len(species_vals) >= 2:
-            genus = genera[0]
-            epithets: list[str] = []
-            for sp in species_vals:
-                sp_clean = _clean_tax_value(sp)
-                if not sp_clean:
-                    continue
-                low = sp_clean.lower()
-                prefix = (genus + " ").lower()
-                ep = sp_clean[len(genus) + 1:] if low.startswith(prefix) else sp_clean
-                ep = ep.strip()
-                if ep and ep not in epithets:
-                    epithets.append(ep)
-            out["Genus"] = genus
-            if len(epithets) == 2:
-                out["Species"] = f"{genus} {epithets[0]}/{epithets[1]}"
-                out["Flag"] = "Fl1 Two species of one genus"
-            else:
-                out["Species"] = f"{genus} sp."
-                out["Flag"] = "Fl1 More than two species of one genus"
-            out["Ambiguous taxa"] = ", ".join(amb)
-            out["unique ID"] = qid
-            out_rows.append(out)
-            continue
-
-        flag_num = RANKS_LOW_TO_HIGH.index(diversity_rank) + 1 if diversity_rank else 1
-        out["Flag"] = f"Fl{flag_num} Two or more {RANK_PLURALS.get(diversity_rank, diversity_rank.lower() + 's')} (trimming to MRCA)"
-        out["Ambiguous taxa"] = ", ".join(amb)
-        _trim_row_to_mrca(out, mrca_rank)
-        out["unique ID"] = qid
-        out_rows.append(out)
-
-    final_df = pd.DataFrame(out_rows, columns=["unique ID"]+TAX_COLS+["Similarity","query_coverage","evalue","Flag","Ambiguous taxa"])
-    cat = pd.Categorical(final_df["unique ID"], categories=fasta_order, ordered=True)
-    final_df = final_df.assign(_ord=cat).sort_values("_ord", kind="stable").drop(columns=["_ord"])
-
-    final_df = _prepare_output_dtypes(
-        final_df,
-        int_cols=[],
-        float_cols=["Similarity", "query_coverage", "evalue"],
-    )
-
-    out_path = os.path.join(tax_dir, f"{base}_taxonomy{ext}")
-    print("Writing taxonomy output...", flush=True)
-    _write_table(final_df, path=out_path, fmt=fmt, sheet_name="Taxonomy table")
-
-    # Sidecar run-info for reproducibility (kept small on purpose).
-    try:
-        from datetime import datetime
-
-        runinfo_path = os.path.join(tax_dir, f"{base}.runinfo.txt")
-
-        # DB timestamp (best-effort)
-        db_mtime = "unknown"
-        try:
-            # Prefer the index file timestamp if we can find it.
-            base_dir = os.path.dirname(db_prefix)
-            cand = None
-            for suf in [".nal", ".nin", ".nhr", ".nsq"]:
-                p = db_prefix + suf
-                if os.path.exists(p):
-                    cand = p
-                    break
-            cand = cand or (db.path if os.path.exists(db.path) else base_dir)
-            db_mtime = datetime.fromtimestamp(os.path.getmtime(cand)).isoformat(timespec="seconds")
-        except Exception:
-            pass
-
-        lines = [
-            f"created_at\t{datetime.now().isoformat(timespec='seconds')}",
-            f"tool_version\t{__version__}",
-            f"output_format\t{fmt}",
-            f"flag_scheme\t{opts.flag_scheme}",
-            f"filter_mode\t{getattr(opts, 'filter_mode', 1)}",
-            f"task\t{opts.task}",
-            f"max_target_seqs\t{opts.max_target_seqs}",
-            f"threads\t{opts.threads}",
-            f"workers\t{opts.workers}",
-            f"subset_size\t{opts.subset_size}",
-            f"min_query_coverage\t{opts.min_qcov}",
-            f"prefer_query_coverage\t{opts.prefer_qcov}",
-            f"max_evalue\t{opts.max_evalue}",
-            f"min_pident\t{opts.min_pident}",
-            f"thresholds\t{opts.thresholds}",
-            f"db_path\t{db.path}",
-            f"db_prefix\t{db_prefix}",
-            f"db_mtime\t{db_mtime}",
-        ]
-        with open(runinfo_path, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(lines) + "\n")
-    except Exception:
-        # Never fail a run because of metadata.
-        pass
-
-    if not opts.keep_tsv:
-        print("Cleaning up temporary files...", flush=True)
-        shutil.rmtree(subsets_dir, ignore_errors=True)
-        try:
-            shutil.rmtree(out_dir, ignore_errors=True)
-        except Exception:
-            pass
-        try:
-            root_tmp = os.path.dirname(out_dir)
-            if os.path.isdir(root_tmp) and not os.listdir(root_tmp):
-                os.rmdir(root_tmp)
-        except Exception:
-            pass
-
-    print(f"BLAST finished in {(time.time()-t0)/60:.1f} min.", flush=True)
-    return {
-        "raw_output": raw_path,
-        "taxonomy_output": out_path,
-        # Backward-compatible keys (paths; may be .xlsx or .parquet.snappy)
-        "raw_xlsx": raw_path,
-        "filtered_xlsx": out_path,
-    }
+    Outputs follow opts.output_dir or the historical parent-of-FASTA layout.
+    Intermediate files live in a uniquely owned output-side directory.
+    """
+    from .streaming import run as run_streaming
+    return run_streaming(query_fasta, out_dir, db, opts)

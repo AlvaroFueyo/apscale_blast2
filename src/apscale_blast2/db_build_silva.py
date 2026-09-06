@@ -9,9 +9,7 @@ from __future__ import annotations
 import gzip
 import os
 import shutil
-import subprocess
 import tempfile
-import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -32,40 +30,8 @@ def _strip_known_suffixes(name: str) -> str:
 
 
 def _resolve_input_file(input_path: str, workdir: str) -> str:
-    """Return a local path to a fasta(.gz) file. If input is a ZIP, extracts the first fasta-like file."""
-    p = os.path.abspath(os.path.expanduser(input_path))
-    if not os.path.exists(p):
-        raise FileNotFoundError(p)
-    if p.lower().endswith(".zip"):
-        with zipfile.ZipFile(p, "r") as zf:
-            members = [m for m in zf.namelist() if not m.endswith("/")]
-
-            def score(m: str) -> int:
-                ml = m.lower()
-                if any(ml.endswith(ext + ".gz") for ext in FA_EXTS):
-                    return 0
-                if any(ml.endswith(ext) for ext in FA_EXTS):
-                    return 1
-                return 2
-
-            members = sorted(members, key=score)
-            if not members:
-                raise ValueError("The ZIP archive is empty.")
-            chosen = members[0]
-            zf.extract(chosen, workdir)
-            extracted = os.path.join(workdir, chosen)
-            out = os.path.join(workdir, os.path.basename(chosen))
-            if extracted != out:
-                os.makedirs(os.path.dirname(out), exist_ok=True)
-                shutil.move(extracted, out)
-                try:
-                    root = os.path.join(workdir, os.path.dirname(chosen))
-                    if root and os.path.isdir(root):
-                        shutil.rmtree(root, ignore_errors=True)
-                except Exception:
-                    pass
-            return out
-    return p
+    from .db_build_common import resolve_input_file
+    return resolve_input_file(input_path, workdir)
 
 
 def _iter_fasta_headers(path: str):
@@ -133,30 +99,45 @@ def _load_taxonomy_table(taxonomy_path: str) -> pd.DataFrame:
     return out[["Accession", "superkingdom", "phylum", "class", "order", "family", "genus", "species"]]
 
 
-def silva_taxonomy_from_headers(fasta_path: str) -> pd.DataFrame:
-    """Attempt to parse SILVA taxonomy from FASTA header lines.
+def load_silva_rank_map(path: str) -> dict[str, str]:
+    opener = gzip.open if str(path).lower().endswith(".gz") else open
+    mapping = {}
+    with opener(path, "rt", encoding="utf-8-sig") as handle:
+        for line in handle:
+            columns = line.rstrip("\n").split("\t")
+            if len(columns) >= 3:
+                mapping[columns[0].strip()] = columns[2].strip().lower()
+    if not mapping or not any(r == "domain" for r in mapping.values()):
+        raise ValueError("Not an official SILVA taxonomy rank map")
+    return mapping
 
-    Many SILVA exports include a semicolon-separated lineage after the first token.
-    We map to the APSCALE ranks using a simple heuristic.
-    """
+
+def silva_taxonomy_from_headers(fasta_path: str, rank_map_path: str | None = None) -> pd.DataFrame:
+    """Map lineage paths to explicit ranks using the matching SILVA release."""
+    if not rank_map_path:
+        raise ValueError("SILVA header taxonomy requires the matching tax_slv rank map; positional rank guessing is not supported")
+    rank_map = load_silva_rank_map(rank_map_path)
     rows = []
     for hdr in _iter_fasta_headers(fasta_path):
         token = hdr.split()[0]
         rest = hdr[len(token) :].strip()
-        parts = [p.strip() for p in rest.split(";") if p.strip()] if rest else []
-
-        if len(parts) >= 2:
-            superkingdom = parts[0] if len(parts) > 0 else ""
-            phylum = parts[1] if len(parts) > 1 else ""
-            clazz = parts[2] if len(parts) > 2 else ""
-            order = parts[3] if len(parts) > 3 else ""
-            family = parts[4] if len(parts) > 4 else ""
-            genus = parts[-2] if len(parts) >= 2 else ""
-            species = parts[-1] if len(parts) >= 1 else ""
-        else:
-            superkingdom = phylum = clazz = order = family = genus = species = ""
-
-        rows.append([token, superkingdom, phylum, clazz, order, family, genus, species])
+        parts = [p.strip() for p in rest.split(";")] if rest else []
+        ranks = dict.fromkeys(["superkingdom", "phylum", "class", "order", "family", "genus", "species"], "")
+        for index, value in enumerate(parts):
+            lineage = ";".join(parts[:index + 1]) + ";"
+            rank = rank_map.get(lineage)
+            rank = "superkingdom" if rank == "domain" else rank
+            if rank in ranks:
+                ranks[rank] = value
+        if not ranks["superkingdom"]:
+            raise ValueError(f"SILVA header not covered by rank map: {token}")
+        # The terminal organism label may supply a species, never an inferred genus.
+        from .taxonomy_clean import clean_species
+        if parts and clean_species(parts[-1], genus=ranks["genus"]):
+            ranks["species"] = parts[-1]
+        elif parts and ranks["genus"] and parts[-1].startswith(ranks["genus"] + " "):
+            ranks["species"] = parts[-1]
+        rows.append([token] + list(ranks.values()))
 
     return pd.DataFrame(
         rows,
@@ -179,13 +160,14 @@ def build_silva_db(
     db_home: str,
     name: str | None = None,
     taxonomy_path: str | None = None,
+    rank_map_path: str | None = None,
     makeblastdb_exe: str = "makeblastdb",
     keep_source: bool = True,
 ) -> str:
     """Build a SILVA BLAST database.
 
-    If taxonomy_path is provided, uses it as mapping table. Otherwise tries to parse
-    taxonomy from FASTA headers.
+    Provide a normalized accession/rank table or an official tax_slv rank map.
+    Rank inference by the position of a label is deliberately unsupported.
     """
     if not name:
         name = _strip_known_suffixes(Path(input_path).name)
@@ -203,7 +185,11 @@ def build_silva_db(
         resolved = _resolve_input_file(input_path, tmp_root)
 
         # Build taxonomy table
-        if taxonomy_path:
+        if taxonomy_path and rank_map_path:
+            raise ValueError("Provide taxonomy_path or rank_map_path, not both")
+        if rank_map_path:
+            tax_df = silva_taxonomy_from_headers(resolved, rank_map_path)
+        elif taxonomy_path:
             tax_df = _load_taxonomy_table(taxonomy_path)
             # Reduce to sequences present in FASTA, if possible
             try:
@@ -220,17 +206,19 @@ def build_silva_db(
             shutil.copy2(resolved, src_dst)
             if taxonomy_path and os.path.exists(taxonomy_path):
                 shutil.copy2(os.path.abspath(os.path.expanduser(taxonomy_path)), os.path.join(tmp_out, "source_taxonomy" + Path(taxonomy_path).suffix))
+            if rank_map_path:
+                shutil.copy2(rank_map_path, os.path.join(tmp_out, "source_rank_map" + Path(rank_map_path).suffix))
 
         # BLAST indices
         prefix = os.path.join(tmp_db_dir, "db")
-        cmd = [makeblastdb_exe, "-in", resolved, "-title", "db", "-dbtype", "nucl", "-out", prefix]
-        subprocess.run(cmd, check=True)
+        from .db_build_common import run_makeblastdb
+        run_makeblastdb(makeblastdb_exe, resolved, prefix, tax_df)
 
         tax_path = os.path.join(tmp_out, "db_taxonomy.parquet.snappy")
         tax_df.to_parquet(tax_path)
 
         os.makedirs(os.path.dirname(out_dir), exist_ok=True)
-        shutil.move(tmp_out, out_dir)
-        return out_dir
+        from .db_build_common import install_built_database
+        return install_built_database(tmp_out, out_dir)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)

@@ -6,13 +6,11 @@ returns it as a dictionary for fast lookups.
 
 from __future__ import annotations
 import os, glob, pandas as pd, re
-from functools import lru_cache
-from typing import List, Dict
 try:
     import pyarrow.parquet as pq
 except Exception:
     pq = None
-from .taxonomy_clean import clean_genus, clean_species, clean_taxon_name
+from .taxonomy_clean import clean_genus, clean_species, clean_taxon_name, species_uncertainty
 
 CANON_RANKS = ["kingdom_name","phylum_name","class_name","order_name","family_name","genus_name","species_name"]
 RANK_SYNONYMS = {
@@ -35,26 +33,27 @@ def _clean_rank(val: str) -> str:
     return clean_taxon_name(v)
 
 def _candidate_dirs(db_prefix: str):
-    paths = []
-    if os.path.isdir(db_prefix):
-        paths.append(os.path.abspath(db_prefix))
-        base_dir = os.path.abspath(db_prefix)
-    else:
-        base_dir = os.path.dirname(os.path.abspath(db_prefix))
-        paths.append(base_dir)
-    parent = os.path.dirname(base_dir); grand = os.path.dirname(parent)
-    for d in [parent, grand]:
-        if d and d not in paths: paths.append(d)
+    base = os.path.abspath(db_prefix)
+    if not os.path.isdir(base):
+        base = os.path.dirname(base)
+    paths = [base]
+    # Builders put indices in <database>/db and the taxonomy beside that folder.
+    if os.path.basename(base).lower() == "db":
+        paths.append(os.path.dirname(base))
     return paths
 
 def find_taxmaps_paths(db_prefix: str):
-    paths = []
     for d in _candidate_dirs(db_prefix):
-        for pat in ["db_taxonomy*.parquet*", "*taxonomy*.parquet*", "db_taxonomy*.csv*", "*taxonomy*.csv*"]:
-            paths.extend(glob.glob(os.path.join(d, pat)))
-    base = _candidate_dirs(db_prefix); pref = {d:i for i,d in enumerate(base)}
-    paths = sorted(set(paths), key=lambda p: (0 if ".parquet" in os.path.basename(p).lower() else 1, pref.get(os.path.dirname(os.path.abspath(p)), 99), p))
-    return paths
+        paths = set()
+        for pat in ["*taxonomy*.parquet*", "*taxonomy*.csv", "*taxonomy*.csv.gz", "*taxonomy*.tsv", "*taxonomy*.tsv.gz"]:
+            paths.update(glob.glob(os.path.join(d, pat)))
+        if paths:
+            canonical = [p for p in paths if os.path.basename(p).startswith("db_taxonomy.")]
+            candidates = canonical or sorted(paths)
+            if len(candidates) != 1:
+                raise ValueError(f"Ambiguous taxonomy tables in {d}: {sorted(candidates)}")
+            return candidates
+    return []
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     cols = list(df.columns); low = {c.lower(): c for c in cols}
@@ -73,30 +72,43 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
             out[dst] = ""
         else:
             out.rename(columns={found: dst}, inplace=True)
+    original = out["species_original"].fillna("").astype(str) if "species_original" in out else out["species_name"].fillna("").astype(str)
+    conflicts = out["taxonomy_conflict"].fillna("").astype(str).copy() if "taxonomy_conflict" in out else pd.Series("", index=out.index)
+    missing_nodes = out["taxonomy_missing_nodes"].fillna("").astype(str) if "taxonomy_missing_nodes" in out else ""
     keep = ["Sequence ID"] + CANON_RANKS
     out = out[keep].copy()
+    out["species_original"] = original
+    out["species_uncertainty"] = out["species_original"].map(species_uncertainty)
     for c in CANON_RANKS:
         out[c] = out[c].map(_clean_rank)
     out["genus_name"] = out["genus_name"].map(clean_genus)
-    out["species_name"] = out.apply(
-        lambda r: clean_species(r.get("species_name", ""), genus=r.get("genus_name", "")) or "",
-        axis=1,
-    )
+    out.loc[out["species_uncertainty"] == "hybrid", "genus_name"] = ""
+    out["species_name"] = [clean_species(s, genus=g) for s, g in zip(out["species_name"], out["genus_name"])]
+    mismatch = out["species_name"].ne("") & out["genus_name"].ne("") & out["species_name"].str.split().str[0].ne(out["genus_name"])
+    out.loc[mismatch, "species_name"] = ""
+    conflicts.loc[mismatch] = conflicts.loc[mismatch].map(lambda value: (value + "; " if value else "") + "species/genus mismatch")
+    out["taxonomy_conflict"] = conflicts
+    out["taxonomy_missing_nodes"] = missing_nodes
     return out
 
-@lru_cache(maxsize=32)
 def load_taxmap_as_dict(db_prefix: str):
-    last_err = None
-    for p in find_taxmaps_paths(db_prefix):
-        try:
-            if p.lower().endswith(".parquet") or ".parquet" in os.path.basename(p).lower():
-                if pq is None: 
-                    last_err = "pyarrow not available"; continue
-                df = pq.read_table(p).to_pandas()
-            else:
-                df = pd.read_csv(p)
-            df = _normalize_columns(df)
-            return {str(r["Sequence ID"]): [str(r[c]) for c in ["kingdom_name","phylum_name","class_name","order_name","family_name","genus_name","species_name"]] for _, r in df.iterrows()}
-        except Exception as e:
-            last_err = str(e); continue
-    raise FileNotFoundError(f"No taxonomy parquet/csv found near the database ({db_prefix}). Last error: {last_err}")
+    paths = find_taxmaps_paths(db_prefix)
+    if not paths:
+        raise FileNotFoundError(f"No taxonomy table associated with database: {db_prefix}")
+    path = paths[0]
+    if ".parquet" in os.path.basename(path).lower():
+        df = pd.read_parquet(path)
+    else:
+        df = pd.read_csv(path, sep="\t" if ".tsv" in path.lower() else ",", dtype=str, keep_default_na=False)
+    df = _normalize_columns(df).fillna("")
+    if df.empty or not df[CANON_RANKS].ne("").any(axis=None):
+        raise ValueError(f"Taxonomy table has no informative ranks: {path}")
+    result = {}
+    for identifier, *ranks in df.itertuples(index=False, name=None):
+        key = str(identifier).strip()
+        if not key:
+            raise ValueError(f"Empty reference ID in {path}")
+        if key in result and result[key] != ranks:
+            raise ValueError(f"Conflicting taxonomy for reference ID {key!r}: {path}")
+        result[key] = ranks
+    return result

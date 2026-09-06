@@ -7,6 +7,10 @@
 Typical use case: metabarcoding workflows where you want to run local BLAST against
 curated reference databases and obtain both **raw BLAST hits** and **taxonomy-aware assignments**.
 
+This is a general metabarcoding tool: it does not depend on an APSCALE project layout,
+a particular marker, or a particular study. See the [current usage and interpretation guide](docs/USAGE.md)
+and the [validation report](docs/VALIDATION.md). Manuals explicitly labelled v1.1.2 are historical.
+
 ## Key features
 
 | Feature | apscale_blast | apscale_blast2 |
@@ -16,11 +20,11 @@ curated reference databases and obtain both **raw BLAST hits** and **taxonomy-aw
 | Database reuse within run | No | Yes (taxonomy cached in memory) |
 | Database handling | External, precompiled databases | Integrated database build and install |
 | Assignment ranking | Similarity-first (mode 1) | Same (mode 1 replicated) |
-| Taxonomic flags | F1–F4 | F1-F5 New logic (see below) |
+| Taxonomic flags | F1–F4 | Fl1-Fl7 (default); F1-F4 (legacy) |
 | Query coverage handling | No | BLAST-level hard filter + soft post-filter |
 | BLAST version requirement | Flexible | BLAST+ ≥ 2.17 required |
 | Database location| User-defined path required for each run | Stored in local user data directory and auto-discovered |
-| Output format | .xslx | .xslx or .parquet.snappy |
+| Output format | .xlsx | .xlsx or .parquet.snappy |
 
 ## Requirements
 
@@ -90,6 +94,17 @@ Or provide a CSV mapping FASTA basenames to database folders:
 apscale_blast2 --fastas /path/to/fastas --db-map mapping.csv
 ```
 
+`--fastas` also accepts a single nucleotide FASTA, including `.fa.gz`, `.fasta.gz`,
+and `.fna.gz`. Relative database paths in the mapping CSV are resolved relative to
+the CSV, not the current working directory. Explicit database selection never asks
+for input; `--db-for-all` and `--db-map` are mutually exclusive.
+
+```bash
+apscale_blast2 --fastas reads.fasta.gz --db-for-all dbs/db_reference --out-dir results/run1 --thresholds 99,95,90,87,85 --output-format parquet
+apscale_blast2 build --recipe pr2 --input pr2_UTAX.fasta.gz --db-home dbs --name pr2
+apscale_blast2 build --help
+```
+
 ## Outputs
 
 For each input FASTA, the tool writes:
@@ -98,6 +113,13 @@ For each input FASTA, the tool writes:
 - `taxonomy/<sample>_taxonomy.xlsx` — taxonomy-aware assignments after filtering/flags
 
 Temporary subset FASTA files are created under a run directory and removed by default.
+
+By default, output folders are placed in the parent of the FASTA directory. Use
+`--out-dir` to select a different root. Existing results are protected; replacing
+them requires `--overwrite`. Outputs are staged and published only after successful
+processing. Excel files split across sheets before the row limit; Parquet is
+recommended for large analyses. The historical Python `run(..., out_dir, ...)`
+argument no longer controls scratch-file deletion; set `RunOptions.output_dir`.
 
 ## Performance notes
 
@@ -110,9 +132,10 @@ Temporary subset FASTA files are created under a run directory and removed by de
 
 ## Reproducibility metadata (sidecar)
 
-Each run writes a small sidecar file (e.g. `runinfo.txt`) alongside the outputs, including the effective parameters used
-(`flag_scheme`, thresholds, BLAST task, `max_target_seqs`, and database path/name when available). This keeps tables clean
-while still making results reproducible.
+Each input writes `<sample>.runinfo.json` and a legacy text sidecar alongside the taxonomy
+table. JSON records effective options, BLAST version, counts, query/taxonomy SHA-256,
+source-module hashes and index file metadata. Preserve these files with the results.
+Raw hits also retain original species names, uncertainty and reference-mapping status.
 
 ## Ambiguity flags
 
@@ -124,7 +147,7 @@ Designed for **curated local databases** (including de-duplicated references). T
 
 After applying identity/coverage thresholds and de-duplicating hits by taxon, the tool checks how many *unique taxa* remain and trims the final assignment to the **MRCA** (most recent common ancestor) when needed:
 
-- **No flag:** only one unique trimmed taxon remains.
+- **No flag:** surviving trimmed lineages are compatible, ignoring missing ranks.
 - **Fl1 — Two species of one genus / More than two species of one genus:** when all surviving taxa belong to the same genus, the final assignment keeps the genus and reports either `Genus epithet1/epithet2` (exactly two species) or `Genus sp.` (more than two species). The surviving taxa are listed under `Ambiguous taxa`.
 - **Fl2/Fl3/… — Two or more genera/families/... (trimming to MRCA):** when multiple genera (or higher ranks) remain, the assignment is trimmed to the MRCA rank and all remaining candidates are stored under `Ambiguous taxa`.
 
@@ -142,9 +165,10 @@ When running the interactive wizard, apscale_blast2 looks for a per-database def
 
 - `<db_folder>/apscale_blast2_defaults.json`
 
-If present, the wizard loads and displays these defaults (identity thresholds, task, `max_target_seqs`, etc.) and lets you
-edit them. If the file is missing, global defaults are shown; if you change any values, the wizard automatically creates
-`apscale_blast2_defaults.json` inside the database folder so you do not need to remember them next time.
+Only identity thresholds are stored in this file. The precedence is explicit
+`--thresholds`, then database defaults, then `97,95,90,87,85`. Decimals are supported;
+values must be finite percentages ordered species >= genus >= family >= order >= class.
+The wizard can edit and save thresholds; non-interactive runs never prompt or save them.
 
 ## Raw BLAST output
 

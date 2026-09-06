@@ -1,0 +1,167 @@
+{
+  "date": "2026-09-06T13:16:48.434173+00:00",
+  "sample_manifest": {
+    "midori2": {
+      "source": "MIDORI2_UNIQ_NUC_GB272_srRNA_BLAST.fasta",
+      "source_sha256": "47cb7c5b1341ae94f191685f1c56a29c6da5a6ccd5cdba4fe965bf61e3c7a9c2",
+      "records": 100,
+      "sample_sha256": "395e81bd4dc716587445c34ff55ab7987d2f6a098fddc026e7cf6de34360f8f6",
+      "selection": "First N complete records, in source order; self-search tests, not a biological truth set"
+    },
+    "pr2": {
+      "source": "pr2_5.1.1_UTAX.fasta.gz",
+      "source_sha256": "eaf1d35fc03ca83c65018203803a385f0a6297dffc625db5a56f888ec2ee3872",
+      "records": 100,
+      "sample_sha256": "1a38cb0219e66da9403824347c4388e6c0080f38fe01492f11b61430cf1715b9",
+      "selection": "First N complete records, in source order; self-search tests, not a biological truth set"
+    },
+    "silva": {
+      "source": "silva_138.2_NR99.fasta.gz",
+      "source_sha256": "2e597253f5a78a57b281f8e8365082b9d0f2dac6fa9beed0eb4868878fe2af50",
+      "records": 100,
+      "sample_sha256": "3c194fe6bdb311f0f9a86ffaf6a48caa4cb83629526af2c6079e6182b4303524",
+      "selection": "First N complete records, in source order; self-search tests, not a biological truth set"
+    },
+    "unite": {
+      "source": "unite_19.02.2025.tgz",
+      "member": "sh_general_release_dynamic_19.02.2025.fasta",
+      "source_sha256": "a340864f947c517b671f1054a261e613a6619ef88dd8000de1699f5e1f21413b",
+      "records": 100,
+      "sample_sha256": "6213df2061fe4f40046b8483b0d03eb7ef3b34c2dab91fa4312a407553d7688e",
+      "selection": "First N complete records, in source order; self-search tests, not a biological truth set"
+    },
+    "trnl": {
+      "source": "trnL_CRUX.zip",
+      "member": "trnL/trnL_fasta_and_taxonomy/trnL_.fasta",
+      "source_sha256": "37b68ccb16731407ed4414f76c96ea98f251f7a0ec662caf2d4eb3eeb0712597",
+      "records": 100,
+      "sample_sha256": "ce3319fb3d5aeaf38e6a7f1c2d0e242fc1e5f300b365d6e831c0e95daaf0d2ed",
+      "selection": "First N complete records, in source order; self-search tests, not a biological truth set"
+    },
+    "diatbarcode": {
+      "source": "diatbarcode_16.3.xlsx",
+      "source_sha256": "03e41bb66eceff487588a61630197350e62ad8ab547dd4eaa5e8ed89aa35e8a0",
+      "records": 100,
+      "sample_sha256": "8d794073e8bba4a2694db040a3fd8f55f9eda4f1b8932f33faaad95284a073f4",
+      "selection": "First N complete records, in source order; self-search tests, not a biological truth set"
+    }
+  },
+  "results": {
+    "midori2": {
+      "passed": true,
+      "queries": 100,
+      "hits": 2642,
+      "mapped_references": 100,
+      "default_statuses": {
+        "assigned": 88,
+        "ambiguous": 11,
+        "no_match": 1
+      },
+      "unmasked_statuses": {
+        "assigned": 88,
+        "ambiguous": 11,
+        "no_match": 1
+      },
+      "canonical_self_queries_checked": 86,
+      "elapsed_seconds": 2.630427399999462
+    },
+    "pr2": {
+      "passed": true,
+      "queries": 100,
+      "hits": 2538,
+      "mapped_references": 100,
+      "default_statuses": {
+        "assigned": 98,
+        "ambiguous": 2
+      },
+      "unmasked_statuses": {
+        "assigned": 98,
+        "ambiguous": 2
+      },
+      "canonical_self_queries_checked": 88,
+      "elapsed_seconds": 3.5743448000011995
+    },
+    "unite": {
+      "passed": true,
+      "queries": 100,
+      "hits": 307,
+      "mapped_references": 100,
+      "default_statuses": {
+        "assigned": 100
+      },
+      "unmasked_statuses": {
+        "assigned": 100
+      },
+      "canonical_self_queries_checked": 99,
+      "elapsed_seconds": 1.4695518000007723
+    },
+    "silva": {
+      "passed": true,
+      "queries": 100,
+      "hits": 2918,
+      "mapped_references": 100,
+      "default_statuses": {
+        "assigned": 97,
+        "ambiguous": 3
+      },
+      "unmasked_statuses": {
+        "assigned": 97,
+        "ambiguous": 3
+      },
+      "canonical_self_queries_checked": 81,
+      "elapsed_seconds": 3.9023295999995753
+    },
+    "trnl": {
+      "passed": true,
+      "queries": 100,
+      "hits": 591,
+      "mapped_references": 100,
+      "default_statuses": {
+        "assigned": 82,
+        "ambiguous": 11,
+        "no_match": 7
+      },
+      "unmasked_statuses": {
+        "assigned": 89,
+        "ambiguous": 11
+      },
+      "canonical_self_queries_checked": 38,
+      "elapsed_seconds": 0.9440855999982887
+    },
+    "diatbarcode": {
+      "passed": true,
+      "queries": 100,
+      "hits": 3000,
+      "mapped_references": 100,
+      "default_statuses": {
+        "assigned": 93,
+        "ambiguous": 7
+      },
+      "unmasked_statuses": {
+        "assigned": 93,
+        "ambiguous": 7
+      },
+      "canonical_self_queries_checked": 79,
+      "elapsed_seconds": 2.9916413000009925
+    },
+    "diatbarcode_Kociolek": {
+      "passed": true,
+      "queries": 100,
+      "hits": 3000,
+      "mapped_references": 100,
+      "default_statuses": {
+        "assigned": 78,
+        "unresolved": 16,
+        "ambiguous": 6
+      },
+      "unmasked_statuses": {
+        "assigned": 78,
+        "unresolved": 16,
+        "ambiguous": 6
+      },
+      "canonical_self_queries_checked": 79,
+      "elapsed_seconds": 3.0007226999987324
+    }
+  },
+  "scope": "Small deterministic official-source self-search fixtures; not a biological accuracy benchmark"
+}
