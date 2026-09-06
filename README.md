@@ -1,7 +1,6 @@
 # apscale_blast2
 
-**Version 2.0** | [User manual](docs/USAGE.md) | [Validation](docs/VALIDATION.md) |
-[Changelog](CHANGELOG.md) | [Contributing](CONTRIBUTING.md)
+**Version 2.0** | [User manual](docs/USAGE.md) | [Changelog](CHANGELOG.md)
 
 `apscale_blast2` is a local BLAST-based taxonomic assignment tool inspired by [**apscale_blast**](https://github.com/TillMacher/apscale_blast).
 
@@ -10,10 +9,6 @@
 Typical use case: metabarcoding workflows where you want to run local BLAST against
 curated reference databases and obtain both **raw BLAST hits** and **taxonomy-aware assignments**.
 
-This is a general metabarcoding tool: it does not depend on an APSCALE project layout,
-a particular marker, or a particular study. See the [current usage and interpretation guide](docs/USAGE.md)
-and the [validation report](docs/VALIDATION.md). The [documentation index](docs/README.md)
-distinguishes current instructions from the historical v1.1.2 manuals.
 
 ## Key features
 
