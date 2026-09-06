@@ -1,7 +1,7 @@
 # Validation and Maintainer Review
 
 Date: 2026-09-06. Baseline: commit `729a6fda8eb8cbbc0ef62db39c1d5ed9af5e24a9`
-(version 1.2.1). Changes are unreleased. This review concerns the general-purpose
+(version 1.2.1). Target release: 2.0.0 (not published by this review). This concerns the general-purpose
 metabarcoding package, not a study-specific pipeline.
 
 ## Scope and Scientific Decisions
@@ -45,7 +45,8 @@ Maintainer decisions incorporated:
 | trnL | Official headerless CRUX and comma CSV were not read correctly; support those formats and named Excel columns. |
 | DiatBarcode | Old single-sheet reader failed on v16 and discarded missing-species rows; support both layouts, both trees, gap counts, conflicts and missing ancestors. |
 | Documentation | Incorrect flags/extensions, overly broad format promises and defaults claims; corrected README and new current usage guide. |
-| Packaging | Deprecated license table; SPDX license metadata and compatible setuptools minimum. Version left for maintainer selection. |
+| Packaging | SPDX licence metadata, compatible setuptools minimum, synchronized 2.0.0 version and explicit public source-archive contents. |
+| Windows CI tests | Short/long path spellings compared as different locations; resolve paths and verify extracted file identity/content. No assignment algorithm change. |
 
 ## Automated Tests
 
@@ -75,8 +76,34 @@ python -m unittest discover -s tests -v
 
 To include native tests, set `BLAST_BIN` to the directory containing the BLAST+
 executables. Without it, two native tests are explicitly skipped. CI is configured
-for Windows/Linux with Python 3.10 and 3.13; those remote jobs have not been executed
-as part of this local review. This is not a claim of tested Linux/macOS compatibility.
+for Windows/Linux with Python 3.10 and 3.13. See the actual remote evidence below;
+this is not a claim of native BLAST or macOS validation on those runners.
+
+## Remote CI Log Review
+
+Maintainer-supplied `logs_92218865678.zip`, dated 2026-09-06, was inspected locally.
+The full logs are not committed. They cover the pre-fix 68-test suite:
+
+| Runner | Python | Tests | Static checks / package build |
+| --- | --- | --- | --- |
+| Ubuntu | 3.10.21 | 66 passed, 2 native tests skipped | Both passed |
+| Ubuntu | 3.13.15 | 66 passed, 2 native tests skipped | Both passed |
+| Windows | 3.10 | 64 passed, 2 failed, 2 native tests skipped | Not reached |
+| Windows | 3.13 | 64 passed, 2 failed, 2 native tests skipped | Not reached |
+
+Both Windows failures were assertions in `test_db_map_relative_paths_and_duplicate_rejection`
+and `test_zip_nested_fasta_extracted_to_owned_name`: the CI temporary directory used
+an 8.3 alias (`RUNNER~1`) while the returned path used the equivalent long name.
+The failing behavior was reproduced locally with an 8.3 temporary root. Tests now
+compare resolved paths; the archive test also verifies file identity and content.
+The application's taxonomy behavior did not need changing for these failures.
+
+The corrected tests are checked locally using normal and short temporary paths.
+A new remote run of the corrected commit is still required before declaring Windows
+CI green. These logs do establish Linux regression, lint and packaging success for
+the pre-fix commit, but not native searches there. No macOS jobs or newer-Python
+validation were added or run in this follow-up. Historical CI artifacts still bear
+the old 1.2.1 metadata; they are not v2.0 release artifacts.
 
 ## Official-Reference Integration
 
@@ -134,9 +161,11 @@ python tools/prepare_reference_samples.py --count 100
 python tools/test_official_references.py --blast-bin /path/to/blast/bin
 ```
 
-No manual download is currently needed. A biological accuracy evaluation would still
-benefit from independently identified mock-community sequences and an expected
-taxonomic table. Self-search is not a sensitivity/specificity benchmark.
+Downloads used for this review are available locally, not bundled in Git or the
+Python distribution. A fresh checkout needs the documented reference releases to
+repeat these optional tests. A biological accuracy evaluation would still benefit
+from independently identified mock-community sequences and an expected taxonomic
+table. Self-search is not a sensitivity/specificity benchmark.
 
 ## Postprocessing Performance
 
@@ -164,11 +193,16 @@ python tools/benchmark_postprocessing.py --queries 10000 --subset-size 100
 
 ## Release Checklist and Limits
 
-- Select a new release number in both `pyproject.toml` and `src/apscale_blast2/__init__.py`.
-  Locally built 1.2.1-labelled artifacts are verification artifacts, not a new release.
+- The maintainer selected 2.0.0, now set in `pyproject.toml` and
+  `src/apscale_blast2/__init__.py`. Older 1.2.1-labelled verification artifacts must
+  not be published as the new release.
 - Replace the existing `authors = [{name = "You"}]` placeholder with the maintainer's
   preferred attribution before publishing.
-- Run the added CI matrix remotely; native validation here is Windows/Python 3.13 only.
+- Rerun the remote CI matrix after the Windows assertion fixes. Native validation
+  here is Windows/Python 3.13 only; macOS and newer Python remain unverified.
+- Follow [the repository and publication checklist](../CONTRIBUTING.md). Databases,
+  full logs, developer environments and experimental outputs remain local; public
+  validation summaries and small examples are retained deliberately.
 - Rebuild old PR2/UNITE/SILVA/DiatBarcode databases when adopting the corrected builders.
   Existing precompiled taxonomy is not silently migrated or repaired.
 - Audit downstream readers: Excel may contain multiple sheets, extra columns are added,
@@ -180,5 +214,5 @@ python tools/benchmark_postprocessing.py --queries 10000 --subset-size 100
 - Memory remains proportional to taxonomy size and query-ID validation; there is no
   automatic resume and no power-failure-proof multi-file transaction.
 
-No repository push, release publication, production replacement or study-specific
-taxonomy rerun was performed by this review.
+No release publication, production replacement or study-specific taxonomy rerun was
+performed in this follow-up. Local edits still need the maintainer's review and push.

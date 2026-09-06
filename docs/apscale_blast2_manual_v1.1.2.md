@@ -2,6 +2,10 @@
 
 *Local BLAST-based taxonomic assignment for metabarcoding (v1.1.2)*
 
+> Historical manual for v1.1.2. For version 2.0, use the [current user manual](USAGE.md).
+> Command behavior and assignment semantics have changed; see the
+> [migration notes](USAGE.md#upgrading-from-1x).
+
 ## Introduction
 
 **apscale_blast2** is a practical tool for **local, reproducible taxonomic assignment** using **NCBI BLAST+** and curated reference databases. It was inspired by [apscale_blast](https://github.com/TillMacher/apscale_blast), and it is optimised for **local BLAST-based assignment** with an emphasis on **reproducibility** and **transparent handling of ambiguity**.

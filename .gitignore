@@ -1,10 +1,11 @@
-# ----------------------------
 # Python / packaging
-# ----------------------------
 __pycache__/
 *.py[cod]
 *.pyd
 *.so
+*.exe
+*.dll
+*.dylib
 *.egg-info/
 .eggs/
 build/
@@ -15,36 +16,53 @@ pip-wheel-metadata/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
+.uv-cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
-# Virtual environments (if you ever use them)
+# Virtual environments
 .venv/
+.venv-*/
 venv/
+venv-*/
 ENV/
 env/
 
-# ----------------------------
 # OS / IDE
-# ----------------------------
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 *.swp
+*~
 
-# ----------------------------
-# Logs / temp
-# ----------------------------
+# Local credentials (example templates remain reviewable)
+.env
+.env.*
+!.env.example
+!.env.sample
+/.codex/
+/.agents/
+
+# Logs, downloaded CI logs and owned temporary work
 *.log
+logs/
+logs_*.zip
 *.tmp
 *.temp
 .*.work_*/
 *.apscale_blast2.lock
 _apscale_blast2_tmp_*/
+.apscale_blast2_build_*/
+.apscale_blast2_install_*/
+.apscale_blast2_previous_*/
 
-# ----------------------------
-# Output folders produced by apscale_blast2 runs
-# (common defaults and your example workflow)
-# ----------------------------
+# Run outputs, at any depth (including inside examples/)
 raw_blast/
 taxonomy/
 tmp/
@@ -53,25 +71,31 @@ out/
 output/
 outputs/
 results/
+*_raw_blast.xlsx
+*_raw_blast.parquet*
+*_taxonomy.xlsx
+*_taxonomy.parquet*
+*.runinfo.json
+*.runinfo.txt
+build_audit.csv
 
-# If you run the wizard inside examples/, ignore any outputs created there
-examples/raw_blast/
-examples/taxonomy/
-examples/tmp/
-examples/temp/
-examples/output/
-examples/outputs/
-examples/results/
+# Quarto render caches and local previews; versioned manuals stay public
+.quarto/
+/.jupyter/
+**/.ipynb_checkpoints/
+/docs/_site/
+/docs/*_files/
 
-
-# Databases
+# Local datasets, reference downloads and built databases.
+# Do not ignore all FASTA/JSON files: small public examples/provenance belong in Git.
 dbs/
+database/
+databases/
+/data/
+/downloads/
+/local/
 
-# ----------------------------
-# BLAST databases (optional)
-# If you ever keep local BLAST db files inside the repo, ignore them.
-# Better stored in the user DB home anyway.
-# ----------------------------
+# Native BLAST index volumes, wherever created
 *.nin
 *.nhr
 *.nsq
@@ -88,3 +112,9 @@ dbs/
 *.phr
 *.psq
 *.pal
+*.pdb
+*.pot
+*.ptf
+*.pto
+*.pjs
+*.pos

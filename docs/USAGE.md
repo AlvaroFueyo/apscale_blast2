@@ -1,7 +1,39 @@
-# Current Usage and Interpretation
+# apscale_blast2 2.0 User Manual
 
-This guide describes the unreleased working tree, not the historical v1.1.2 PDF.
+This is the maintained manual for the 2.0 release line, not the historical v1.1.2 PDF.
 The package is intended for general metabarcoding projects and standalone FASTA files.
+It assigns taxonomy to nucleotide queries; read trimming, denoising, clustering and
+negative-control removal belong to the upstream processing workflow.
+
+## Installation and Requirements
+
+Use Python >= 3.10 in a virtual environment. For a source checkout:
+
+```bash
+python -m venv .venv
+```
+
+Activate with `source .venv/bin/activate` on Linux/macOS, or
+`.\.venv\Scripts\Activate.ps1` in Windows PowerShell, then install:
+
+```bash
+python -m pip install .
+apscale_blast2 --version
+apscale_blast2 --help
+apscale_blast2 build --help
+```
+
+Pip installs the Python dependencies (pandas, openpyxl, pyarrow and tqdm), but not
+NCBI BLAST+. Install BLAST+ >= 2.17.0 separately for the OS/architecture in use.
+The assignment CLI checks `blastn` and `makeblastdb`; precompiled bundle validation
+also needs `blastdbcmd`. Each can be supplied by its `--*-exe` option instead of
+changing `PATH`. Verify executables with `blastn -version`, `makeblastdb -version`
+and `blastdbcmd -version`; these commands do not run a search.
+
+The Python package is shared across Windows, Linux and macOS, but native dependencies
+must match the platform. See [the validation report](VALIDATION.md#remote-ci-log-review)
+for actual test coverage. macOS and newer Python versions are not verified by that
+report. No global Python or PATH change is required by these installation steps.
 
 ## Reproducible CLI
 
@@ -162,3 +194,28 @@ Default masking can remove short/low-complexity queries even on self-search. Tre
 `no_match` as a result of the configured search, not evidence that the taxon is absent.
 `max_target_seqs=30` is not an exhaustive census of tied references. Inspect the
 hit-limit indicator and compare higher limits where taxonomic decisions depend on it.
+
+## Upgrading from 1.x
+
+Keep the original software environment, reference releases, settings and results
+when reproducibility of an earlier analysis matters. Install v2.0 in a separate
+environment and use a new output root for comparison.
+
+- Rebuild databases made with older PR2, UNITE, SILVA or DiatBarcode builders to
+  adopt corrected IDs and taxonomy handling. Installing an old precompiled ZIP does
+  not convert its contents to the corrected interpretation.
+- Replace interactive automation workarounds with explicit `--fastas`, `--db-for-all`
+  or `--db-map`, and `--out-dir`. CLI thresholds now override database defaults.
+- Use `assigned_rank` and `assignment_status`, not a nonempty `Species` cell alone,
+  to count resolved species. Conservative name cleaning and conflict handling can
+  intentionally produce different assignments from earlier versions.
+- Read every Excel sheet or use Parquet. Additional audit columns are intentional;
+  downstream code must not depend on a fixed column count or one-sheet workbooks.
+- Existing outputs now require `--overwrite`. Failed runs retain diagnostics; they
+  do not support automatic resume. Preserve JSON sidecars alongside final tables.
+- Python callers should set `RunOptions.output_dir`. The historical positional
+  `run(..., out_dir, ...)` parameter no longer defines a directory that can be deleted.
+
+Do not put study inputs, full reference releases or run outputs into public commits.
+See [the contribution guide](../CONTRIBUTING.md) for local directory conventions and
+release checks, and [the changelog](../CHANGELOG.md) for the full change summary.

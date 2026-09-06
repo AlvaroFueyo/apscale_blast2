@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased - Reliability and general metabarcoding validation
+## 2.0.0 - Unreleased
 
 - Fixed unattended CLI operation, explicit threshold precedence, decimal/range validation, and database-local defaults.
 - Added a non-interactive `build` command, explicit output roots, gzip query support, collision protection and opt-in overwrite.
@@ -13,9 +13,14 @@
 - Added DiatBarcode v16 RCM/Kociolek trees, conflict consensus, missing-node audit and documented gap removal; retained v12 compatibility.
 - Added synthetic regressions, opt-in native CLI/megablast tests, official-reference validation tools and Windows/Linux CI configuration.
 - Documented scientific limits, supported input dialects, recovery behaviour and migration from previous releases.
+- Fixed two Windows CI assertions that confused short (8.3) and long paths to the same location.
+- Standardized LF line endings, clarified current versus historical manuals, expanded local-data ignore rules and explicitly scoped source-archive contents.
 
-Release number is intentionally unchanged pending maintainer selection. Historical
-PDF/manual files are retained as versioned documentation, not current instructions.
+Package metadata and CLI version are now `2.0.0`, as selected by the maintainer.
+Historical PDF/manual files are retained as versioned documentation, not current
+instructions. See [the migration guide](docs/USAGE.md#upgrading-from-1x) before
+replacing a 1.x workflow; assignment semantics, database mappings and output contracts
+have intentional compatibility changes.
 
 ## 1.2.1 — Species restoration, MIDORI handling, and documentation cleanup
 

@@ -1,5 +1,13 @@
-include CHANGELOG.md
-recursive-include docs *.md *.json
+include README.md CHANGELOG.md CONTRIBUTING.md LICENSE
+include .editorconfig .gitattributes
+include docs/README.md docs/USAGE.md docs/VALIDATION.md
+include docs/validation/reference_sources.json docs/validation/official_results.json
+include docs/apscale_blast2_manual_v1.1.2.md
+include docs/apscale_blast2_manual_v1.1.2.qmd
+include docs/apscale_blast2_manual_v1.1.2.pdf
+include examples/Example_12S_200.fasta examples/Example_16S_Bacteria_200.fasta
+include examples/Example_COI_200.fasta examples/Example_RBCL_200.fasta
 recursive-include tools *.py
 recursive-include tests *.py
 prune dbs
+global-exclude __pycache__ *.py[cod]

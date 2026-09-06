@@ -1,5 +1,8 @@
 # apscale_blast2
 
+**Version 2.0** | [User manual](docs/USAGE.md) | [Validation](docs/VALIDATION.md) |
+[Changelog](CHANGELOG.md) | [Contributing](CONTRIBUTING.md)
+
 `apscale_blast2` is a local BLAST-based taxonomic assignment tool inspired by [**apscale_blast**](https://github.com/TillMacher/apscale_blast).
 
 ## Project overview
@@ -9,7 +12,8 @@ curated reference databases and obtain both **raw BLAST hits** and **taxonomy-aw
 
 This is a general metabarcoding tool: it does not depend on an APSCALE project layout,
 a particular marker, or a particular study. See the [current usage and interpretation guide](docs/USAGE.md)
-and the [validation report](docs/VALIDATION.md). Manuals explicitly labelled v1.1.2 are historical.
+and the [validation report](docs/VALIDATION.md). The [documentation index](docs/README.md)
+distinguishes current instructions from the historical v1.1.2 manuals.
 
 ## Key features
 
@@ -29,7 +33,14 @@ and the [validation report](docs/VALIDATION.md). Manuals explicitly labelled v1.
 ## Requirements
 
 - Python **>= 3.10**
-- [**NCBI BLAST+ >= 2.17.0**](https://blast.ncbi.nlm.nih.gov/doc/blast-help/downloadblastdata.html) in the Path (hard requirement). The program checks this at startup.
+- [**NCBI BLAST+ >= 2.17.0**](https://blast.ncbi.nlm.nih.gov/doc/blast-help/downloadblastdata.html),
+  including `blastn` and `makeblastdb`; `blastdbcmd` is also needed to validate
+  precompiled bundles. Put these on `PATH` or pass their executable paths.
+
+Windows, Linux and macOS use the same Python package but need BLAST binaries for
+their OS/architecture. The declared Python minimum is not a claim that every newer
+version has been tested. See the [platform and CI evidence](docs/VALIDATION.md#remote-ci-log-review)
+for verified environments and outstanding checks; macOS remains unverified.
 
 You can find the latest blast+ executables and further information on the installation [here](https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/LATEST/).
 
@@ -145,17 +156,27 @@ apscale_blast2 supports **two flagging/assignment schemes**, selectable via `--f
 
 Designed for **curated local databases** (including de-duplicated references). The old dominance criterion was removed because apscale_blast2 works with local curated databases, usually already taxonomically deduplicated, where redundancy-driven “dominant taxon” heuristics lose much of their meaning.
 
-After applying identity/coverage thresholds and de-duplicating hits by taxon, the tool checks how many *unique taxa* remain and trims the final assignment to the **MRCA** (most recent common ancestor) when needed:
+After hit selection and rank-specific identity trimming, the tool compares unique
+taxonomic profiles using a **rank-wise compatible consensus**. It does not calculate
+an MRCA from an external taxonomy or phylogenetic tree:
 
 - **No flag:** surviving trimmed lineages are compatible, ignoring missing ranks.
 - **Fl1 — Two species of one genus / More than two species of one genus:** when all surviving taxa belong to the same genus, the final assignment keeps the genus and reports either `Genus epithet1/epithet2` (exactly two species) or `Genus sp.` (more than two species). The surviving taxa are listed under `Ambiguous taxa`.
-- **Fl2/Fl3/… — Two or more genera/families/... (trimming to MRCA):** when multiple genera (or higher ranks) remain, the assignment is trimmed to the MRCA rank and all remaining candidates are stored under `Ambiguous taxa`.
+- **Fl2-Fl7, conflicts from genus to kingdom:** the first conflicting rank and all
+  lower ranks are cleared. Candidate profiles are retained under `Ambiguous taxa`.
 
 If some hits are missing ranks (e.g. genus/species is empty), those missing values are ignored **when other hits provide a resolved value**, so you do not get false ambiguity just because one record is incompletely annotated.
 
+Use `assigned_rank` and `assignment_status` to interpret results: Fl1 composite
+labels are not resolved species, and cf./aff./hybrid names remain conservative.
+The manual details [uncertainty and audit columns](docs/USAGE.md#outputs-and-audit-columns).
+
 ### `--flag-scheme apscale` (legacy)
 
-Replicates the **APSCALE / APSCALE-GUI** decision tree (F1–F4) described by Macher et al. (2023). When using this mode, apscale_blast2 also restores key legacy parameters (e.g. `task=blastn`, `max-target-seqs=20`, and no query-coverage filtering).
+Retains the **APSCALE / APSCALE-GUI** decision branch (F1-F4) described by Macher et al.
+(2023) and restores legacy search parameters (`task=blastn`, `max-target-seqs=20`,
+and no query-coverage filtering). Input validation and conservative name cleaning
+are shared with v2.0; this is not a bit-for-bit replay of historical results.
 
 Macher T-H, Schütz R, Yildiz A, Beermann AJ, Leese F (2023) ﻿Evaluating five primer pairs for environmental DNA metabarcoding of Central European fish species based on mock communities. Metabarcoding and Metagenomics 7: e103856. [https://doi.org/10.3897/mbmg.7.103856](https://doi.org/10.3897/mbmg.7.103856)
 
@@ -219,7 +240,18 @@ Curd, E. E., Gold, Z., Kandlikar, G. S., Gomer, J., Ogden, M., O’Connell, T., 
 
 #### Precompiled databases
 
-Apscale-blast2 could intall pre-compiled databases. The [pre-compiled databases are available under the following server](https://seafile.rlp.net/d/474b9682a5cb4193a6ad/) and will be updated regularly.
+Precompiled bundles can be installed with `apscale_blast2 build --recipe precompiled`.
+The [external database collection](https://seafile.rlp.net/d/474b9682a5cb4193a6ad/)
+is separate from this code repository. Select the intended reference release and
+verify its taxonomy format; installation does not silently repair old mappings.
+
+## Upgrading and Contributing
+
+Before replacing an older installation, read [the v2.0 migration notes](docs/USAGE.md#upgrading-from-1x).
+Keep reference databases, experimental data and run outputs outside the public source
+tree or in ignored local directories. Tests, small examples and sanitized validation
+summaries remain public to make the software reviewable and reproducible. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for repository and release checks.
 
 
 ## License

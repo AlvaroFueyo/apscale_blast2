@@ -247,7 +247,9 @@ class FileTests(unittest.TestCase):
 
     def test_db_map_relative_paths_and_duplicate_rejection(self):
         mapping = self.write("map.csv", "fasta,db\na.fa,relative/db\n")
-        self.assertEqual(read_db_map(str(mapping))["a.fa"], str(self.root / "relative" / "db"))
+        # Windows temp directories may use an 8.3 alias for the same location.
+        self.assertEqual(Path(read_db_map(str(mapping))["a.fa"]).resolve(),
+                         (self.root / "relative" / "db").resolve())
         mapping.write_text("fasta,db\na.fa,one\na.fa,two\n")
         with self.assertRaises(ValueError):
             read_db_map(str(mapping))
@@ -272,7 +274,9 @@ class FileTests(unittest.TestCase):
             resolve_input_file(str(archive), str(self.root))
         archive = self.archive({"directory/a.fasta": ">a\nACGT\n"})
         result = resolve_input_file(str(archive), str(self.root))
-        self.assertEqual(Path(result), self.root / "a.fasta")
+        self.assertEqual(Path(result).resolve(), (self.root / "a.fasta").resolve())
+        self.assertTrue(Path(result).samefile(self.root / "a.fasta"))
+        self.assertEqual(Path(result).read_text(encoding="utf-8"), ">a\nACGT\n")
 
     def test_zip_multiple_fasta_requires_explicit_selection(self):
         archive = self.archive({"a.fa": ">a\nACGT\n", "b.fa": ">b\nACGT\n"})
