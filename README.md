@@ -236,7 +236,7 @@ Curd, E. E., Gold, Z., Kandlikar, G. S., Gomer, J., Ogden, M., O’Connell, T., 
 #### Precompiled databases
 
 Precompiled bundles can be installed with `apscale_blast2 build --recipe precompiled`.
-The [external database collection](https://seafile.rlp.net/d/474b9682a5cb4193a6ad/)
+The [external database collection](https://seafile.rlp.net/d/c172d076de1e4c45b594/)
 is separate from this code repository. Select the intended reference release and
 verify its taxonomy format; installation does not silently repair old mappings.
 
